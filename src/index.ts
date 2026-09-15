@@ -34,7 +34,17 @@ if (CLI.has("qr")) {
   process.exit(0);
 }
 
-registerYimuTools(server, client, CONFIG.qrDir);
+// 自动登录：未配 JWT 但配了邮箱/密码时，启动即登录获取 JWT（失败不阻断，AI 可随时调 login_email 重试）
+if (!CONFIG.token && CONFIG.email && CONFIG.password) {
+  try {
+    await client.loginByEmail(CONFIG.email, CONFIG.password);
+    process.stderr.write(`[yimu-mcp] 已用配置账号自动登录: userId=${client.userId}\n`);
+  } catch (e) {
+    process.stderr.write(`[yimu-mcp] 自动登录失败: ${(e as Error).message}（可调 login_email/login_qr_* 重试）\n`);
+  }
+}
+
+registerYimuTools(server, client, CONFIG.qrDir, { email: CONFIG.email, password: CONFIG.password });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

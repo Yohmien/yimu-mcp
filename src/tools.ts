@@ -119,7 +119,12 @@ const SCHEMA_HINTS: Record<string, string> = {
   BillImport: "billImport 导入记录；无快照数据，按服务端契约传递",
 };
 
-export function registerYimuTools(server: McpServer, client: YimuClient, qrDir: string): void {
+export function registerYimuTools(
+  server: McpServer,
+  client: YimuClient,
+  qrDir: string,
+  creds: { email: string; password: string } = { email: "", password: "" },
+): void {
   const requireAuth = (args: Record<string, unknown>): void => {
     if (!client.token) {
       throw new YimuError(
@@ -142,6 +147,8 @@ export function registerYimuTools(server: McpServer, client: YimuClient, qrDir: 
         token_set: Boolean(client.token),
         user_id: client.userId || null,
         base_url: client.baseUrl,
+        email_configured: Boolean(creds.email),
+        password_configured: Boolean(creds.password),
       }),
     },
     {
@@ -228,19 +235,24 @@ export function registerYimuTools(server: McpServer, client: YimuClient, qrDir: 
       name: "login_email",
       description:
         "邮箱密码登录（免鉴权）。密码按网页端加密方案（AES-128-ECB）加密后提交；返回用户对象与 JWT。" +
+        "不传 email/password 时使用环境变量 YIMU_EMAIL/YIMU_PASSWORD（未配置则报错）。" +
         "请优先使用扫码登录（更安全）。",
       inputSchema: {
         type: "object",
         properties: {
-          email: { type: "string", description: "一木记账账号邮箱" },
-          password: { type: "string", description: "账号密码（仅本次调用，不落盘）" },
+          email: { type: "string", description: "一木记账账号邮箱；缺省用环境变量 YIMU_EMAIL" },
+          password: { type: "string", description: "账号密码；缺省用环境变量 YIMU_PASSWORD（仅本次调用，不落盘）" },
         },
-        required: ["email", "password"],
         additionalProperties: false,
       },
       noAuth: true,
       handler: async (a) => {
-        const user = await client.loginByEmail(str(a.email), str(a.password));
+        const email = str(a.email) || creds.email;
+        const password = str(a.password) || creds.password;
+        if (!email || !password) {
+          throw new YimuError("缺少邮箱或密码：请传 email/password 参数，或在环境变量配置 YIMU_EMAIL/YIMU_PASSWORD");
+        }
+        const user = await client.loginByEmail(email, password);
         return { user, token: client.token };
       },
     },

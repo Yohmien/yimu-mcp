@@ -20,7 +20,7 @@ export const SERVER_VERSION: string = (() => {
 
 export interface Setting {
   /** 归一化后的字段名 */
-  key: "token" | "userToken" | "userId" | "baseUrl" | "timeoutMs" | "qrDir";
+  key: "token" | "userToken" | "userId" | "baseUrl" | "timeoutMs" | "qrDir" | "email" | "password";
   /** 环境变量名 */
   env: string;
   /** 配置文件键名 */
@@ -38,6 +38,8 @@ const SETTINGS: Setting[] = [
   { key: "baseUrl", env: "YIMU_BASE_URL", file: "baseUrl", def: "https://yimubill.com/api" },
   { key: "timeoutMs", env: "YIMU_TIMEOUT", file: "timeoutMs", def: "30000" },
   { key: "qrDir", env: "YIMU_QR_DIR", file: "qrDir", def: "" },
+  { key: "email", env: "YIMU_EMAIL", file: "email", def: "", secret: true },
+  { key: "password", env: "YIMU_PASSWORD", file: "password", def: "", secret: true },
 ];
 
 export const RESOLVED: Record<string, { env: string; value: string; source: "arg" | "env" | "file" | "default" }> = {};
@@ -131,6 +133,8 @@ export const CONFIG = {
   baseUrl: RESOLVED.baseUrl.value.replace(/\/+$/, ""),
   timeoutMs: Math.max(1000, Number(RESOLVED.timeoutMs.value) || 30000),
   qrDir: RESOLVED.qrDir.value || defaultQrDir(),
+  email: RESOLVED.email.value,
+  password: RESOLVED.password.value,
 };
 
 export { cfg as CONFIG_FILE };
@@ -155,6 +159,10 @@ if (hasFlag("help") || hasFlag("h")) {
   --base-url / YIMU_BASE_URL   API 基址，默认 https://yimubill.com/api
   --timeout-ms / YIMU_TIMEOUT  请求超时毫秒，默认 30000
   --config / YIMU_CONFIG       配置文件路径，默认 ./yimu.config.json
+
+账号密码登录（可选：未配 YIMU_TOKEN 时启动自动登录，AI 也可随时调 login_email 登录）：
+  --email / YIMU_EMAIL         一木记账账号邮箱
+  --password / YIMU_PASSWORD   账号密码（AES-128-ECB 加密提交，不落盘；仅存于环境变量）
 
 二维码目录（扫码登录）：
   --qr-dir / YIMU_QR_DIR       二维码图片保存目录，默认系统临时目录下 yimu-mcp/（可用 --qr-dir 或 YIMU_QR_DIR 覆盖）

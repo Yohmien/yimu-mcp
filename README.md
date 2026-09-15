@@ -36,7 +36,8 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 
 | 环境变量 | 说明 |
 |---|---|
-| `YIMU_TOKEN` | 登录令牌 JWT（登录后获得） |
+| `YIMU_TOKEN` | 登录令牌 JWT（登录后获得，优先级最高） |
+| `YIMU_EMAIL` / `YIMU_PASSWORD` | 账号邮箱/密码（可选：未配 TOKEN 时启动自动登录；`login_email` 不传参时用这对凭据） |
 | `YIMU_USER_ID` | 用户 ID（部分接口需要，登录后自动获取） |
 | `YIMU_BASE_URL` | 服务地址，默认 `https://yimubill.com/api` |
 | `YIMU_QR_DIR` | 二维码保存目录，默认系统临时目录 |
@@ -64,8 +65,18 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 
 1. **扫码登录（推荐）**：调用 `login_qr_start`，二维码直接显示在对话或终端里；
    手机打开一木记账 App，首页 → 更多 → 扫一扫，扫完调用 `login_qr_poll` 等待登录结果。
-2. **邮箱密码登录**：调用 `login_email`，填邮箱和密码即可，密码加密传输。
+2. **邮箱密码登录**：调用 `login_email`，填邮箱和密码即可，密码加密传输；
+   不传参数时自动使用环境变量 `YIMU_EMAIL` / `YIMU_PASSWORD`。
 3. **JWT 直配**：在环境变量里配好 `YIMU_TOKEN`，启动即已登录。
+
+> 配了 `YIMU_EMAIL` / `YIMU_PASSWORD` 而未配 TOKEN 时，服务启动会自动登录获取 JWT，
+> AI 即可直接读写账本；令牌过期后随时调 `login_email`（无参）重新登录。
+> 三种方式互不影响：二维码/邮箱登录获得的 JWT 会覆盖配置值。
+
+## 安全说明
+
+- 密码仅存于环境变量，提交时 AES-128-ECB 加密，不落盘、不进仓库；`--print-config` 不打印任何凭据明文。
+- 在 hub 等平台配置 `YIMU_PASSWORD` 前，请确认其环境变量存储方式；优先用 `YIMU_TOKEN` 或扫码登录。
 
 ## 工具一览
 
