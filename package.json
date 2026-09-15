@@ -1,0 +1,68 @@
+{
+  "name": "@powercess/yimu-mcp",
+  "version": "0.1.0",
+  "description": "一木记账（yimubill.com）网络 MCP 服务器：扫码/邮箱登录、增量同步、账本/账单/资产/分类/标签/转账/借贷/报销/退款等全部网页接口的读写封装",
+  "type": "module",
+  "license": "MIT",
+  "author": "powercess",
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "yimu",
+    "yimubill",
+    "bookkeeping",
+    "accounting",
+    "expense"
+  ],
+  "homepage": "https://github.com/powercess/yimu-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/powercess/yimu-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/powercess/yimu-mcp/issues"
+  },
+  "engines": {
+    "node": ">=23.4"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "yimu-mcp": "./dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "qrcode": "^1.5.4",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+*.tsbuildinfo
+
+# 本地敏感配置：含账号令牌与本地路径，绝不提交。配置请用环境变量：
+#   YIMU_TOKEN / YIMU_USER_TOKEN / YIMU_USER_ID / YIMU_BASE_URL / YIMU_TIMEOUT / YIMU_QR_DIR
+yimu.config.json
+.env
+.env.*
+!.env.example
+
+# 日志与系统杂项
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
