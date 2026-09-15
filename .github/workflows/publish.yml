@@ -1,3 +1,9 @@
+# 发布到 npmjs。
+# 认证二选一：
+#   A. npmjs Trusted Publishing（推荐）：在 npmjs 上为本仓库启用 OIDC 发布授权，
+#      本 workflow 无需任何 token，--provenance 自动走 OIDC。
+#   B. 传统方式：仓库 Secrets 配置 NPM_TOKEN（Publish 权限），并在下方 publish 步骤
+#      恢复 env: { NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} }。
 name: Publish to npm
 
 on:
@@ -10,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance（供应链接收方校验）
+      id-token: write # npm provenance（OIDC 发布签名）
     steps:
       - uses: actions/checkout@v4
 
@@ -33,5 +39,3 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
