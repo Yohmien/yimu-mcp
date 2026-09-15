@@ -15,7 +15,7 @@
 
 需要 Node ≥ 23.4 或 Bun ≥ 1.x。
 
-安装（发布到 npm 后可用）：
+安装：
 
 ```bash
 npm install -g @powercess/yimu-mcp
