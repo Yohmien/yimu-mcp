@@ -17,7 +17,7 @@
   "homepage": "https://github.com/powercess/yimu-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/powercess/yimu-mcp.git"
+    "url": "git+https://github.com/powercess/yimu-mcp.git"
   },
   "bugs": {
     "url": "https://github.com/powercess/yimu-mcp/issues"
@@ -33,7 +33,7 @@
     }
   },
   "bin": {
-    "yimu-mcp": "./dist/index.js"
+    "yimu-mcp": "dist/index.js"
   },
   "publishConfig": {
     "access": "public"
