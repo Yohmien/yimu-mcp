@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { YimuClient, YimuError } from "./api.ts";
 import { renderQrPng, renderQrTerminal, saveQrPng, recognizeQrImage } from "./qr.ts";
+import { prune, projectEntity, sanitizeUser, roundMoney, fmtDate } from "./prune.ts";
 
 type Handler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -18,7 +19,7 @@ interface QrResult {
 }
 
 /** 统一输出：QrResult 渲染为 文本+图片 内容块；其余 JSON 序列化 */
-const out = (v: unknown): { content: ContentBlock[] } => {
+const out = (v: unknown, opts?: { noPrune?: boolean }): { content: ContentBlock[] } => {
   if (
     v &&
     typeof v === "object" &&
@@ -30,7 +31,8 @@ const out = (v: unknown): { content: ContentBlock[] } => {
     if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
     return { content };
   }
-  return { content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 1) }] };
+  const data = opts?.noPrune ? v : prune(v);
+  return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 1) }] };
 };
 
 interface PropSchema {
@@ -85,6 +87,8 @@ interface ToolDef {
   inputSchema: Record<string, unknown>;
   /** 免鉴权工具（登录/扫码/同步会话/STS NoVerify） */
   noAuth?: boolean;
+  /** 跳过输出裁剪（api_request 逃生通道原样返回） */
+  noPrune?: boolean;
   handler: Handler;
 }
 
@@ -118,6 +122,55 @@ const SCHEMA_HINTS: Record<string, string> = {
   Reimbursement: "reimbursement 无快照数据；携带 billId/remark/金额字段与 userId，按服务端契约传递",
   BillImport: "billImport 导入记录；无快照数据，按服务端契约传递",
 };
+
+/** 同步数据摘要：计数 + 收支合计 + 最近10笔 + 分类Top + 资产（面向 AI 分析，避免全量实体淹没上下文） */
+function summarizeSync(d: Record<string, unknown>): unknown {
+  const bills = Array.isArray(d.Bill) ? (d.Bill as Record<string, unknown>[]) : [];
+  const counts: Record<string, number> = {};
+  for (const [k, v] of Object.entries(d)) if (Array.isArray(v)) counts[k] = v.length;
+  let income = 0;
+  let expense = 0;
+  const byCat = new Map<number, { count: number; expense: number; income: number }>();
+  for (const b of bills) {
+    const cost = typeof b.cost === "number" && Number.isFinite(b.cost) ? b.cost : Number(b.cost) || 0;
+    const inc = Number(b.parentCategoryId) === 9; // 系统收入根分类（与网页端一致）
+    if (inc) income += cost;
+    else expense += cost;
+    const cid = Number(b.parentCategoryId) || 0;
+    const e = byCat.get(cid) ?? { count: 0, expense: 0, income: 0 };
+    e.count += 1;
+    if (inc) e.income += cost;
+    else e.expense += cost;
+    byCat.set(cid, e);
+  }
+  const topCategories = [...byCat.entries()]
+    .map(([id, v]) => ({ parentCategoryId: id, count: v.count, expense: roundMoney(v.expense), income: roundMoney(v.income) }))
+    .sort((x, y) => Number(y.expense) + Number(y.income) - (Number(x.expense) + Number(x.income)))
+    .slice(0, 10);
+  const recentBills = [...bills]
+    .sort((a, b) => (Number(b.time) || 0) - (Number(a.time) || 0))
+    .slice(0, 10)
+    .map((b) => ({
+      billId: b.billId,
+      cost: roundMoney(b.cost),
+      date: fmtDate(b.time),
+      parentCategoryId: b.parentCategoryId,
+      childCategoryId: b.childCategoryId,
+      remark: b.remark,
+      assetId: b.assetId,
+    }));
+  const assets = Array.isArray(d.Asset)
+    ? d.Asset.map((x) => projectEntity("Asset", (x ?? {}) as Record<string, unknown>))
+    : [];
+  return prune({
+    syncTime: d.syncTime,
+    counts,
+    totals: { income: roundMoney(income), expense: roundMoney(expense), bills: bills.length },
+    recentBills,
+    topCategories,
+    assets,
+  });
+}
 
 export function registerYimuTools(
   server: McpServer,
@@ -203,7 +256,7 @@ export function registerYimuTools(
         const deadline = Date.now() + timeout * 1000;
         for (;;) {
           const user = await client.getScanLogin(sid);
-          if (user) return { status: "success", user, token: client.token };
+          if (user) return { status: "success", user: sanitizeUser(user), token: client.token };
           if (timeout === 0 || Date.now() >= deadline) {
             return { status: "pending", hint: "等待扫码或登录尚未完成；可再次调用本工具（传 timeout 秒数则自动等待）" };
           }
@@ -253,7 +306,7 @@ export function registerYimuTools(
           throw new YimuError("缺少邮箱或密码：请传 email/password 参数，或在环境变量配置 YIMU_EMAIL/YIMU_PASSWORD");
         }
         const user = await client.loginByEmail(email, password);
-        return { user, token: client.token };
+        return { user: sanitizeUser(user as Record<string, unknown>), token: client.token };
       },
     },
     {
@@ -267,7 +320,7 @@ export function registerYimuTools(
       handler: async (a) => {
         const id = uid(a);
         if (!id) throw new YimuError("缺少用户 ID：请传 user_id 或先登录");
-        return client.getUserInfoById(id);
+        return sanitizeUser((await client.getUserInfoById(id)) as Record<string, unknown>);
       },
     },
 
@@ -275,13 +328,15 @@ export function registerYimuTools(
     {
       name: "sync_pull",
       description:
-        "增量拉取全部业务数据（GET /updateTime/getUpdateDataPage/{userId}/{time}）。" +
-        "返回 {syncTime, Bill:[...], Asset:[...], ParentCategory:[...], ...} 等实体列表；time 为上次同步时间戳(ms)，" +
-        "缺省 0 表示全量（数据量大，注意输出上限）。新同步建议先调 get_book_last_time / get_me 取游标。",
+        "增量拉取业务数据（GET /updateTime/getUpdateDataPage/{userId}/{time}）。" +
+        "默认返回摘要：syncTime、各实体计数、收支合计、最近10笔、分类Top10、资产列表——适合 AI 快速分析账目；" +
+        "需要完整明细时传 summary=false，各实体按业务字段精简返回（Bill 只含 billId/cost/日期/分类/备注等）。" +
+        "time 为上次同步时间戳(ms)，缺省 0 表示全量。",
       inputSchema: {
         type: "object",
         properties: {
           time: { type: "number", description: "上次同步时间戳(ms)，0=全量" },
+          summary: { type: "boolean", description: "默认 true：返回摘要；false 返回全部实体明细（已精简）" },
           user_id: { type: "string" },
         },
         additionalProperties: false,
@@ -290,7 +345,15 @@ export function registerYimuTools(
         requireAuth(a);
         const id = uid(a);
         if (!id) throw new YimuError("缺少用户 ID");
-        return client.getUpdateDataPage(id, a.time === undefined ? 0 : num(a.time, 0));
+        const t = a.time === undefined ? 0 : num(a.time, 0);
+        const data = (await client.getUpdateDataPage(id, t)) as Record<string, unknown> | null;
+        if (!data || typeof data !== "object") return data;
+        if (a.summary !== false) return summarizeSync(data);
+        const outData: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(data)) {
+          outData[k] = Array.isArray(v) ? v.map((x) => projectEntity(k, (x ?? {}) as Record<string, unknown>)) : v;
+        }
+        return prune(outData);
       },
     },
     {
@@ -330,7 +393,8 @@ export function registerYimuTools(
       name: "get_book_bills",
       description:
         "分页查询账本账单（GET /bill/getAccountBillPage/{userId}/{bookId}/{page}）。" +
-        "返回 {Bill:[...], syncTime, hasMoreData}；page 从 0 起，按 hasMoreData 翻页。",
+        "返回 {syncTime, hasMoreData, billCount, totals:{income,expense}, bills:[精简账单]}；" +
+        "账单只含 billId/cost/日期/分类/备注/账户等业务字段。page 从 0 起，按 hasMoreData 翻页。",
       inputSchema: {
         type: "object",
         properties: {
@@ -345,7 +409,25 @@ export function registerYimuTools(
         requireAuth(a);
         const id = uid(a);
         if (!id) throw new YimuError("缺少用户 ID");
-        return client.getAccountBillPage(id, str(a.book_id), num(a.page, 0));
+        const page = num(a.page, 0);
+        const r = (await client.getAccountBillPage(id, str(a.book_id), page)) as Record<string, unknown> | null;
+        if (!r || typeof r !== "object") return r;
+        const bills = Array.isArray(r.Bill) ? (r.Bill as Record<string, unknown>[]) : [];
+        let income = 0;
+        let expense = 0;
+        for (const b of bills) {
+          const cost = typeof b.cost === "number" && Number.isFinite(b.cost) ? b.cost : Number(b.cost) || 0;
+          if (Number(b.parentCategoryId) === 9) income += cost;
+          else expense += cost;
+        }
+        return prune({
+          syncTime: r.syncTime,
+          hasMoreData: r.hasMoreData,
+          page,
+          billCount: bills.length,
+          totals: { income: roundMoney(income), expense: roundMoney(expense) },
+          bills: bills.map((b) => projectEntity("Bill", b)),
+        });
       },
     },
     {
@@ -384,7 +466,7 @@ export function registerYimuTools(
     },
     {
       name: "get_assets",
-      description: "查询资产列表（GET /asset/getAsset/{userId}/{time}），time 为起始时间戳(ms)，缺省 0 全量。",
+      description: "查询资产列表（GET /asset/getAsset/{userId}/{time}），time 为起始时间戳(ms)，缺省 0 全量；每个资产只保留业务字段（名称/余额/类型/分组）。",
       inputSchema: {
         type: "object",
         properties: {
@@ -397,7 +479,8 @@ export function registerYimuTools(
         requireAuth(a);
         const id = uid(a);
         if (!id) throw new YimuError("缺少用户 ID");
-        return client.getAsset(id, a.time === undefined ? 0 : num(a.time, 0));
+        const r = await client.getAsset(id, a.time === undefined ? 0 : num(a.time, 0));
+        return Array.isArray(r) ? r.map((x) => projectEntity("Asset", x)) : r;
       },
     },
     {
@@ -663,6 +746,7 @@ export function registerYimuTools(
         required: ["method", "path"],
         additionalProperties: false,
       },
+      noPrune: true,
       handler: async (a) => {
         requireAuth(a);
         const method = String(a.method).toUpperCase();
@@ -685,7 +769,7 @@ export function registerYimuTools(
       try {
         const a = (args ?? {}) as Record<string, unknown>;
         if (!t.noAuth) requireAuth(a);
-        return out(await t.handler(a));
+        return out(await t.handler(a), t.noPrune ? { noPrune: true } : undefined);
       } catch (e) {
         return { isError: true, content: [{ type: "text", text: (e as Error).message }] };
       }
