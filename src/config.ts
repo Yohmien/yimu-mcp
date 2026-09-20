@@ -3,6 +3,7 @@
 // 注意：非 CLI 模式绝不能往 stdout 写任何东西——stdout 是 MCP 的 JSON-RPC 通道，诊断走 stderr。
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { defaultQrDir } from "./qr.ts";
 
@@ -20,7 +21,7 @@ export const SERVER_VERSION: string = (() => {
 
 export interface Setting {
   /** 归一化后的字段名 */
-  key: "token" | "userToken" | "userId" | "baseUrl" | "timeoutMs" | "qrDir" | "email" | "password";
+  key: "token" | "userToken" | "userId" | "baseUrl" | "timeoutMs" | "qrDir" | "email" | "password" | "tokenDb" | "tokenStoreKey";
   /** 环境变量名 */
   env: string;
   /** 配置文件键名 */
@@ -31,6 +32,14 @@ export interface Setting {
   secret?: boolean;
 }
 
+const defaultTokenDbPath = (): string =>
+  path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "mcp",
+    "yimu-mcp",
+    "auth.sqlite",
+  );
+
 const SETTINGS: Setting[] = [
   { key: "token", env: "YIMU_TOKEN", file: "token", def: "", secret: true },
   { key: "userToken", env: "YIMU_USER_TOKEN", file: "userToken", def: "", secret: true },
@@ -40,6 +49,8 @@ const SETTINGS: Setting[] = [
   { key: "qrDir", env: "YIMU_QR_DIR", file: "qrDir", def: "" },
   { key: "email", env: "YIMU_EMAIL", file: "email", def: "", secret: true },
   { key: "password", env: "YIMU_PASSWORD", file: "password", def: "", secret: true },
+  { key: "tokenDb", env: "YIMU_TOKEN_DB", file: "tokenDb", def: defaultTokenDbPath() },
+  { key: "tokenStoreKey", env: "YIMU_TOKEN_STORE_KEY", file: "", def: "", secret: true },
 ];
 
 export const RESOLVED: Record<string, { env: string; value: string; source: "arg" | "env" | "file" | "default" }> = {};
@@ -97,6 +108,7 @@ function printOut(v: string): void {
 }
 
 function fromFile(cfg: { data: Record<string, unknown> } | null, s: Setting): string {
+  if (!s.file) return "";
   const v = cfg?.data?.[s.file];
   if (typeof v === "string") return v;
   if (typeof v === "number") return String(v);
@@ -129,7 +141,7 @@ const cfg = loadConfigFile();
 for (const s of SETTINGS) {
   let value = "";
   let source: "arg" | "env" | "file" | "default" = "default";
-  if (hasFlag(s.key)) {
+  if (s.key !== "tokenStoreKey" && hasFlag(s.key)) {
     value = flagValue(s.key);
     source = "arg";
   } else if (process.env[s.env]) {
@@ -157,6 +169,8 @@ export const CONFIG = {
   qrDir: RESOLVED.qrDir.value || defaultQrDir(),
   email: RESOLVED.email.value,
   password: RESOLVED.password.value,
+  tokenDb: RESOLVED.tokenDb.value,
+  tokenStoreKey: RESOLVED.tokenStoreKey.value,
 };
 
 export { cfg as CONFIG_FILE };
@@ -180,6 +194,8 @@ if (hasFlag("help") || hasFlag("h")) {
   --user-id / YIMU_USER_ID     用户 ID（部分接口路径参数需要；登录后可自动获取）
   --base-url / YIMU_BASE_URL   API 基址，默认 https://yimubill.com/api；仅允许官方 HTTPS 地址或本地回环地址
   --timeout-ms / YIMU_TIMEOUT  请求超时毫秒，默认 30000
+  YIMU_TOKEN_DB                加密登录状态数据库，默认 ~/.codex/mcp/yimu-mcp/auth.sqlite
+  YIMU_TOKEN_STORE_KEY         AES-256-GCM 密钥（仅环境变量；未配置则不持久化 JWT）
   --config / YIMU_CONFIG       配置文件路径，默认 ./yimu.config.json
 
 账号密码登录（可选：未配 YIMU_TOKEN 时启动自动登录，AI 也可随时调 login_email 登录）：

@@ -45,6 +45,8 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 | `YIMU_USER_ID` | 用户 ID（部分接口需要，登录后自动获取） |
 | `YIMU_BASE_URL` | API 地址，默认 `https://yimubill.com/api`；只允许官方 HTTPS 地址或本地回环地址 |
 | `YIMU_QR_DIR` | 二维码保存目录，默认系统临时目录 |
+| `YIMU_TOKEN_DB` | 加密登录状态数据库路径，默认 `~/.codex/mcp/yimu-mcp/auth.sqlite` |
+| `YIMU_TOKEN_STORE_KEY` | AES-256-GCM 密钥；未配置时不持久化 JWT |
 
 优先使用扫码登录；如使用 `YIMU_TOKEN`，只通过本地环境变量传入，不要写入 Codex 配置文件或聊天内容。
 
@@ -56,11 +58,11 @@ Codex 配置（`~/.codex/config.toml`）：
 [mcp_servers.yimu]
 command = "node"
 args = ["C:/Users/你的用户名/.codex/mcp/yimu-mcp/dist/index.js"]
-env_vars = ["YIMU_TOKEN", "YIMU_USER_ID"]
+env_vars = ["YIMU_TOKEN", "YIMU_USER_ID", "YIMU_TOKEN_STORE_KEY"]
 default_tools_approval_mode = "writes"
 ```
 
-只有本地环境中已设置的 `YIMU_TOKEN` / `YIMU_USER_ID` 才会传给服务；写入和删除工具应始终由 Codex 请求确认。
+只有本地环境中已设置的变量才会传给服务；不要把 `YIMU_TOKEN_STORE_KEY` 的实际值写入 Codex 配置或仓库。写入和删除工具应始终由 Codex 请求确认。
 
 ## 登录
 
@@ -72,12 +74,15 @@ default_tools_approval_mode = "writes"
 
 > 配了 `YIMU_EMAIL` / `YIMU_PASSWORD` 而未配 TOKEN 时，服务启动会自动登录获取 JWT，
 > AI 即可直接读写账本；令牌过期后随时调 `login_email`（无参）重新登录。
-> 三种方式互不影响：二维码/邮箱登录获得的 JWT 会覆盖配置值。
+> 配置 `YIMU_TOKEN_STORE_KEY` 后，登录状态会以 AES-256-GCM 密文保存到 SQLite；未配置密钥时只保留在内存。
+> 三种方式互不影响：二维码/邮箱登录获得的 JWT 会覆盖配置值并更新本地密文。
 
 ## 安全说明
 
 - 密码仅从环境变量读取，提交时 AES-128-ECB 加密，不落盘、不进入 MCP 参数；`--print-config` 不打印凭据明文。
 - 登录成功只返回 `token_set` 和用户 ID，JWT 保留在服务进程内存中，不进入模型上下文。
+- SQLite 只保存 AES-256-GCM 密文、随机 nonce 和认证标签；`YIMU_TOKEN_STORE_KEY` 不写入数据库、仓库或 Codex 配置。
+- 令牌收到 401/403 或明确失效响应时会清除内存状态和本地密文；丢失密钥只能重新扫码登录。
 - API 基址固定限制为 `https://yimubill.com` 或本地回环地址，且请求不跟随重定向，避免 token 被转发到其他主机。
 - 不提供通用 API、STS 凭证或任意本地图片读取工具；写入/删除工具带有 MCP 权限提示标记。
 

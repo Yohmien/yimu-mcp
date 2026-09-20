@@ -17,6 +17,12 @@ export class YimuError extends Error {
   }
 }
 
+export interface AuthState {
+  token: string;
+  userToken: string;
+  userId: string;
+}
+
 /** 解析响应信封 → 业务结果；非成功抛 YimuError */
 export function unwrapEnvelope(data: unknown): unknown {
   if (data === null || typeof data !== "object") return data;
@@ -55,6 +61,8 @@ export interface YimuClientOptions {
   timeoutMs?: number;
   /** 测试注入点 */
   fetchImpl?: typeof fetch;
+  onAuthChanged?: (state: AuthState) => void;
+  onAuthFailure?: () => void;
 }
 
 export class YimuClient {
@@ -62,6 +70,8 @@ export class YimuClient {
   private readonly origin: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly onAuthChanged?: (state: AuthState) => void;
+  private readonly onAuthFailure?: () => void;
   /** 当前 JWT；登录/扫码/查用户成功后自动刷新（请求头 token 用） */
   token: string;
   /** userObjectToken（登录结果里的 token 字段，通常为邮箱）；getUserInfoById 表单用 */
@@ -78,6 +88,41 @@ export class YimuClient {
     this.userId = opts.userId !== undefined ? String(opts.userId) : "";
     this.timeoutMs = opts.timeoutMs ?? 30000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.onAuthChanged = opts.onAuthChanged;
+    this.onAuthFailure = opts.onAuthFailure;
+  }
+
+  getAuthState(): AuthState {
+    return { token: this.token, userToken: this.userToken, userId: this.userId };
+  }
+
+  private notifyAuthChanged(): void {
+    try {
+      this.onAuthChanged?.(this.getAuthState());
+    } catch {
+      // 持久化失败不阻断当前 API 调用。
+    }
+  }
+
+  private invalidateAuth(): void {
+    const hadAuth = Boolean(this.token || this.userToken || this.userId);
+    this.token = "";
+    this.userToken = "";
+    this.userId = "";
+    if (hadAuth) {
+      try {
+        this.onAuthFailure?.();
+      } catch {
+        // 清理失败不覆盖原始认证错误。
+      }
+    }
+  }
+
+  private looksLikeAuthFailure(message: string): boolean {
+    return (
+      /(token|jwt|登录|认证)/i.test(message) &&
+      /(invalid|expired|unauthor|过期|失效|无效|不能为空|缺少)/i.test(message)
+    );
   }
 
   private pathToUrl(path: string): string {
@@ -142,6 +187,7 @@ export class YimuClient {
       throw new YimuError(`网络请求失败: ${(e as Error).message}`, e);
     }
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) this.invalidateAuth();
       const text = await res.text().catch(() => "");
       throw new YimuError(`HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
     }
@@ -157,9 +203,17 @@ export class YimuClient {
       const d = data as Record<string, unknown>;
       if (typeof d.token === "string" && d.token && /(getUserEmail|getScanLogin|getUserInfoById)/.test(path)) {
         this.token = d.token;
+        this.notifyAuthChanged();
       }
     }
-    return unwrapEnvelope(data);
+    try {
+      return unwrapEnvelope(data);
+    } catch (e) {
+      if (e instanceof YimuError && this.looksLikeAuthFailure(e.message)) {
+        this.invalidateAuth();
+      }
+      throw e;
+    }
   }
 
   // ---------------- 认证 ----------------
@@ -179,6 +233,7 @@ export class YimuClient {
     const id = obj.userId ?? obj.id;
     if (typeof id === "number" || typeof id === "string") this.userId = String(id);
     if (typeof obj.token === "string" && obj.token) this.userToken = obj.token;
+    this.notifyAuthChanged();
   }
 
   async getUserInfoById(userId: string | number): Promise<unknown> {
