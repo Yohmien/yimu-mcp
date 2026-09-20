@@ -104,9 +104,10 @@ default_tools_approval_mode = "writes"
   `get_share_accounts`（共享账本）、`get_account_members`（账本成员）、`get_delete_history`（删除记录）
 
 - **记账**：`save_bill` / `save_bills`（单条/批量新增或更新）、`delete_bill`（删除）
+- **理财记账**：`save_stock_trade`（按「份额×净值」补充理财买入/卖出，自动计算金额；网页端没有理财流水编辑入口，写入走 App 侧接口 `POST /stockInfo/addOrUpdateStockInfo`）
 - **其他实体**：`save_asset` `save_account_book` `save_tag` `save_transfer` `save_lend`
   `save_parent_category` `save_child_category` `save_reimbursement` `save_refund`
-  `save_bill_file` `save_bill_import` `save_asset_history`（对应删除用 `delete_*`）
+  `save_bill_file` `save_bill_import` `save_asset_history` `save_stock_asset` `save_stock_info`（对应删除用 `delete_*`）
 - **辅助**：`parse_bill_text`（一句话记账解析）
 
 > `updateTime/getUpdateDataPage` 是 `syncTime` 游标分页接口：单页只返回部分记录（账单每页上限 1000 条），

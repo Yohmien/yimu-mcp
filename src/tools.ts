@@ -121,6 +121,14 @@ const SCHEMA_HINTS: Record<string, string> = {
   AccountBook: "accountBookId 主键；bookName 账本名；bookType 账本类型；shareUsers 共享用户；字段按服务端契约传递",
   Reimbursement: "reimbursement 无快照数据；携带 billId/remark/金额字段与 userId，按服务端契约传递",
   BillImport: "billImport 导入记录；无快照数据，按服务端契约传递",
+  StockAsset:
+    "stockAssetId 主键；name 名称；code 代码（场外基金形如 of539002，场内为证券代码）；assetType 持仓类型（20 基金，其余按服务端枚举）；" +
+    "groupName 分组；primeCost 持仓成本价；primeNum 持仓份额；intoTotalAsset 计入总资产；upDownToTotal 计入涨跌；monetary 货币型；" +
+    "positionWeight 排序；historyIncome 历史收益；remark 备注；userId/updateTime 自动填充",
+  StockInfo:
+    "stockInfoId 主键；stockAssetId 所属持仓；type 方向（2 买入、1 卖出）；cost 确认净值；num 确认份额；totalCost 金额（净值×份额）；" +
+    "serviceCharge 手续费；doTime 买入/卖出时间(ms)；endTime 确认时间(ms)；assetId 付款/收款账户（0 表示无账户）；" +
+    "infoStatus 状态（1 待确认、2 失败）；autoIncome 自动计入收益；billId 关联账单；remark 备注；userId/updateTime 自动填充",
 };
 
 /** 同步数据摘要：计数 + 收支合计 + 最近10笔 + 分类Top + 资产（面向 AI 分析，避免全量实体淹没上下文） */
@@ -803,6 +811,69 @@ export function registerYimuTools(
       },
     },
 
+    // ---------------- 写入：理财买卖（份额×净值） ----------------
+    {
+      name: "save_stock_trade",
+      description:
+        "理财买入/卖出补充记账（POST /stockInfo/addOrUpdateStockInfo）。按「份额×净值」录入时只给 cost(确认净值) 与 num(确认份额)，自动计算 totalCost=净值×份额；" +
+        "也可只给 total_cost 按总额方式录入。type=2 买入、1 卖出；带 stock_info_id 为更新已有流水。",
+      inputSchema: {
+        type: "object",
+        properties: {
+          stock_asset_id: { type: "number", description: "理财持仓 stockAssetId（必填）" },
+          type: { type: "number", description: "2 买入 / 1 卖出（必填）" },
+          cost: { type: "number", description: "确认净值（与 num 搭配时必填）" },
+          num: { type: "number", description: "确认份额（与 cost 搭配时必填）" },
+          total_cost: { type: "number", description: "金额；缺省按 cost×num 计算" },
+          service_charge: { type: "number", description: "手续费，缺省 0" },
+          trade_time: { type: "number", description: "买入/卖出日期时间戳(ms)，缺省当前时间" },
+          confirm_time: { type: "number", description: "确认日期时间戳(ms)，缺省与买入日期相同" },
+          asset_id: { type: "number", description: "付款/收款账户 assetId，缺省 0（无账户）" },
+          remark: { type: "string", description: "备注" },
+          auto_income: { type: "boolean", description: "是否自动计入收益" },
+          stock_info_id: { type: "number", description: "流水主键；传则为更新" },
+          user_id: { type: "string" },
+        },
+        required: ["stock_asset_id", "type"],
+        additionalProperties: false,
+      },
+      destructive: true,
+      handler: async (a) => {
+        requireAuth(a);
+        const id = uid(a);
+        if (!id) throw new YimuError("缺少用户 ID");
+        const stockAssetId = num(a.stock_asset_id, 0);
+        if (!stockAssetId) throw new YimuError("缺少 stock_asset_id（理财持仓）");
+        const type = num(a.type, 0);
+        if (type !== 1 && type !== 2) throw new YimuError("type 只能是 2（买入）或 1（卖出）");
+        const hasShares = a.cost !== undefined && a.num !== undefined;
+        if (a.total_cost === undefined && !hasShares) {
+          throw new YimuError("需要 total_cost，或同时提供 cost(净值) 与 num(份额) 以按份额×净值计算");
+        }
+        const cost = num(a.cost, 0);
+        const shares = num(a.num, 0);
+        const totalCost =
+          a.total_cost === undefined ? (roundMoney(cost * shares) as number) : (roundMoney(a.total_cost) as number);
+        const now = Date.now();
+        const doTime = a.trade_time === undefined ? now : num(a.trade_time, now);
+        const entity: Record<string, unknown> = {
+          stockAssetId,
+          type,
+          num: shares,
+          cost,
+          totalCost,
+          serviceCharge: a.service_charge === undefined ? 0 : roundMoney(a.service_charge),
+          doTime,
+          endTime: a.confirm_time === undefined ? doTime : num(a.confirm_time, doTime),
+          assetId: a.asset_id === undefined ? 0 : num(a.asset_id, 0),
+          remark: str(a.remark),
+          autoIncome: a.auto_income === true,
+        };
+        if (a.stock_info_id !== undefined) entity.stockInfoId = num(a.stock_info_id, 0);
+        ownUser(entity);
+        return client.addOrUpdateEntity("stockInfo", "addOrUpdateStockInfo", entity);
+      },
+    },
     // ---------------- 写入：其他实体（表驱动） ----------------
     ...Object.entries(ENTITY_ENDPOINTS).flatMap(([toolKey, ep]) => {
       const cap = ep.action; // 如 Asset
@@ -926,4 +997,6 @@ const ENTITY_ENDPOINTS: Record<string, { domain: string; action: string; pk: str
   bill_file: { domain: "billFile", action: "BillFile", pk: "fileId", label: "账单附件" },
   bill_import: { domain: "billImport", action: "BillImport", pk: "importId", label: "账单导入记录", noDelete: true },
   asset_history: { domain: "assetHistory", action: "AssetHistory", pk: "assetHistoryId", label: "资产变动记录" },
+  stock_asset: { domain: "stockAsset", action: "StockAsset", pk: "stockAssetId", label: "理财持仓" },
+  stock_info: { domain: "stockInfo", action: "StockInfo", pk: "stockInfoId", label: "理财流水" },
 };
