@@ -484,7 +484,7 @@ export function registerYimuTools(
     {
       name: "get_asset_modules",
       description:
-        "查询资产相关模块（增量同步接口的定向投影），返回资产、定期/固定存款、分期、借贷和预算数据；" +
+        "查询资产相关模块（增量同步接口的定向投影），返回资产、定期/固定存款、分期和预算数据，并返回借贷数量；" +
         "不会返回完整账单或资产历史明细，适合理财概览。",
       inputSchema: {
         type: "object",
@@ -500,7 +500,7 @@ export function registerYimuTools(
         if (!id) throw new YimuError("缺少用户 ID");
         const data = (await client.getUpdateDataPage(id, a.time === undefined ? 0 : num(a.time, 0))) as Record<string, unknown> | null;
         if (!data || typeof data !== "object") return data;
-        const moduleKeys = ["Asset", "AssetFixedDeposit", "Instalment", "Lend", "Budget", "CategoryBudget"];
+        const moduleKeys = ["Asset", "AssetFixedDeposit", "Instalment", "Budget", "CategoryBudget"];
         const modules: Record<string, unknown> = {};
         const counts: Record<string, number> = {};
         for (const key of moduleKeys) {
@@ -512,6 +512,7 @@ export function registerYimuTools(
             modules[key] = value;
           }
         }
+        if (Array.isArray(data.Lend)) counts.Lend = data.Lend.length;
         if (Array.isArray(data.AssetHistory)) counts.AssetHistory = data.AssetHistory.length;
         return prune({ syncTime: data.syncTime, counts, modules });
       },
