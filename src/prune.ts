@@ -47,6 +47,8 @@ const PROJECTIONS: Record<string, string[]> = {
   Refund: ["refundId", "billId", "refundNum"],
   BillFile: ["fileId", "billId", "fileName", "fileSize"],
   AssetHistory: ["assetHistoryId", "assetId", "time", "currentNum", "changeNum", "changeContent"],
+  StockInfo: ["stockInfoId", "stockAssetId", "assetId", "type", "num", "cost", "serviceCharge", "totalCost", "doTime", "endTime", "autoIncome", "infoStatus"],
+  StockAsset: ["stockAssetId", "name", "code", "assetId", "type", "num", "cost", "totalCost", "profit", "profitRate", "currentPrice", "currentValue"],
   Tag: ["tagId", "tagName"],
   AccountBook: ["accountBookId", "bookName", "bookType"],
 };
@@ -61,8 +63,12 @@ const MONEY_FIELDS: Record<string, true> = {
   assetNumber: true,
   currentNum: true,
   changeNum: true,
+  totalCost: true,
+  currentPrice: true,
+  currentValue: true,
+  profit: true,
 };
-const DATE_FIELDS: Record<string, true> = { time: true, outTime: true, inTime: true };
+const DATE_FIELDS: Record<string, true> = { time: true, outTime: true, inTime: true, doTime: true, endTime: true };
 
 /** 实体投影：保留业务字段并规整数值/日期；未知实体仅做空值裁剪 */
 export function projectEntity(type: string, obj: Record<string, unknown>): unknown {

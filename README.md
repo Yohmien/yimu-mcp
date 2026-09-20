@@ -100,7 +100,7 @@ default_tools_approval_mode = "writes"
 - **登录与账号**：`login_qr_start` `login_qr_poll` `login_email` `get_me` `auth_status`
 - **查询**：`sync_pull`（增量同步，默认返回摘要：计数/收支合计/最近明细/分类Top）、`get_bill_count`（账单总数）、
   `get_book_bills`（账本账单分页，精简账单+收支小计）、
-  `get_assets`（资产，仅业务字段）、`get_asset_modules`（资产/定期/理财/借贷/预算定向摘要）、`get_currency`（币种）、`get_category_info`（分类）、
+  `get_assets`（资产，仅业务字段）、`get_asset_modules`（资产/定期/基金股票理财流水与持仓/预算定向摘要）、`get_currency`（币种）、`get_category_info`（分类）、
   `get_share_accounts`（共享账本）、`get_account_members`（账本成员）、`get_delete_history`（删除记录）
 - **记账**：`save_bill` / `save_bills`（单条/批量新增或更新）、`delete_bill`（删除）
 - **其他实体**：`save_asset` `save_account_book` `save_tag` `save_transfer` `save_lend`
