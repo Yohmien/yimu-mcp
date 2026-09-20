@@ -482,6 +482,41 @@ export function registerYimuTools(
       },
     },
     {
+      name: "get_asset_modules",
+      description:
+        "查询资产相关模块（增量同步接口的定向投影），返回资产、定期/固定存款、分期、借贷和预算数据；" +
+        "不会返回完整账单或资产历史明细，适合理财概览。",
+      inputSchema: {
+        type: "object",
+        properties: {
+          time: { type: "number", description: "起始时间戳(ms)，缺省 0 全量" },
+          user_id: { type: "string" },
+        },
+        additionalProperties: false,
+      },
+      handler: async (a) => {
+        requireAuth(a);
+        const id = uid(a);
+        if (!id) throw new YimuError("缺少用户 ID");
+        const data = (await client.getUpdateDataPage(id, a.time === undefined ? 0 : num(a.time, 0))) as Record<string, unknown> | null;
+        if (!data || typeof data !== "object") return data;
+        const moduleKeys = ["Asset", "AssetFixedDeposit", "Instalment", "Lend", "Budget", "CategoryBudget"];
+        const modules: Record<string, unknown> = {};
+        const counts: Record<string, number> = {};
+        for (const key of moduleKeys) {
+          const value = data[key];
+          if (Array.isArray(value)) {
+            counts[key] = value.length;
+            modules[key] = value.map((x) => projectEntity(key, (x ?? {}) as Record<string, unknown>));
+          } else if (value !== undefined) {
+            modules[key] = value;
+          }
+        }
+        if (Array.isArray(data.AssetHistory)) counts.AssetHistory = data.AssetHistory.length;
+        return prune({ syncTime: data.syncTime, counts, modules });
+      },
+    },
+    {
       name: "get_account_members",
       description: "查询账本成员（GET /accountBook/getAccountMember/{userId}/{bookId}）。",
       inputSchema: {
@@ -713,6 +748,7 @@ export function registerYimuTools(
     "get_book_last_time",
     "get_share_accounts",
     "get_assets",
+    "get_asset_modules",
     "get_account_members",
     "get_account_delete_history",
     "get_currency",

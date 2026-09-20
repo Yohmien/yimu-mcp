@@ -215,7 +215,7 @@ if (hasFlag("help") || hasFlag("h")) {
 
 MCP 工具：auth_status / login_qr_start / login_qr_poll / login_email / get_me /
 sync_start / sync_end / sync_pull / get_delete_history / get_bill_count /
-get_book_bills / get_book_last_time / get_share_accounts / get_assets /
+get_book_bills / get_book_last_time / get_share_accounts / get_assets / get_asset_modules /
 get_account_members / get_account_delete_history / get_currency / get_category_info /
 save_bill / save_bills / delete_bill / save_asset / delete_asset /
 save_account_book / delete_account_book / save_tag / delete_tag /
