@@ -824,6 +824,70 @@ export function registerYimuTools(
 
     // ---------------- 写入：理财买卖（份额×净值） ----------------
     {
+      name: "save_stock_fund",
+      description:
+        "新增或更新理财持仓（POST /stockAsset/addOrUpdateStockAsset）。要补记的基金/债券不在资产列表里时，先用本工具建仓，再用 save_stock_trade 按份额×净值记流水。" +
+        "新增时主键 stockAssetId 由工具生成（服务端要求客户端生成主键，缺失会返回 success 但不落库）；6 位基金代码自动补 of 前缀。返回 stockAssetId 供后续写入使用。",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "持仓名称，如「景顺长城纳斯达克科技ETF联接(QDII)A人民币」（必填）" },
+          code: { type: "string", description: "基金/证券代码；场外基金可只给 6 位数字，自动补 of 前缀" },
+          asset_type: { type: "number", description: "持仓类型，缺省 20（基金），债券/存款类用 25" },
+          group_name: { type: "string", description: "分组名，缺省「基金」" },
+          into_total_asset: { type: "boolean", description: "是否计入总资产，缺省 true" },
+          up_down_to_total: { type: "boolean", description: "是否计入涨跌，缺省 true" },
+          monetary: { type: "boolean", description: "是否货币型，缺省 false" },
+          position_weight: { type: "number", description: "排序权重，缺省 0" },
+          remark: { type: "string", description: "备注" },
+          stock_asset_id: { type: "number", description: "持仓主键 stockAssetId；传则为更新" },
+          user_id: { type: "string" },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      destructive: true,
+      handler: async (a) => {
+        requireAuth(a);
+        const id = uid(a);
+        if (!id) throw new YimuError("缺少用户 ID");
+        const name = str(a.name).trim();
+        if (!name) throw new YimuError("缺少 name（持仓名称）");
+        let code = str(a.code).trim();
+        if (/^\d{6}$/.test(code)) code = `of${code}`;
+        const now = Date.now();
+        const entity: Record<string, unknown> = {
+          name,
+          code,
+          assetType: a.asset_type === undefined ? 20 : num(a.asset_type, 20),
+          groupName: str(a.group_name, "基金") || "基金",
+          primeCost: 0,
+          primeNum: 0,
+          intoTotalAsset: a.into_total_asset === undefined ? true : a.into_total_asset === true,
+          upDownToTotal: a.up_down_to_total === undefined ? true : a.up_down_to_total === true,
+          monetary: a.monetary === true,
+          positionWeight: a.position_weight === undefined ? 0 : num(a.position_weight, 0),
+          hide: false,
+          offsetNum: 0,
+          bookId: 0,
+          historyIncome: 0,
+          addBill: false,
+          lastSyncTime: now,
+          updateTime: now,
+          remark: str(a.remark),
+        };
+        if (a.stock_asset_id === undefined) {
+          entity.id = 0;
+          entity.stockAssetId = randomEntityId();
+        } else {
+          entity.stockAssetId = num(a.stock_asset_id, 0);
+        }
+        ownUser(entity);
+        await client.addOrUpdateEntity("stockAsset", "addOrUpdateStockAsset", entity);
+        return { applied: true, stockAssetId: entity.stockAssetId, entity };
+      },
+    },
+    {
       name: "save_stock_trade",
       description:
         "理财买入/卖出补充记账（POST /stockInfo/addOrUpdateStockInfo）。按「份额×净值」录入时只给 cost(确认净值) 与 num(确认份额)，自动计算 totalCost=净值×份额；" +
@@ -892,7 +956,20 @@ export function registerYimuTools(
           entity.stockInfoId = num(a.stock_info_id, 0);
         }
         ownUser(entity);
-        return client.addOrUpdateEntity("stockInfo", "addOrUpdateStockInfo", entity);
+        await client.addOrUpdateEntity("stockInfo", "addOrUpdateStockInfo", entity);
+        return {
+          applied: true,
+          stockInfoId: entity.stockInfoId,
+          stockAssetId,
+          type,
+          num: shares,
+          cost,
+          totalCost,
+          serviceCharge: entity.serviceCharge,
+          infoStatus: entity.infoStatus,
+          doTime: fmtDate(doTime),
+          endTime: fmtDate(entity.endTime),
+        };
       },
     },
     // ---------------- 写入：其他实体（表驱动） ----------------

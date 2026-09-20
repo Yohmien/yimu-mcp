@@ -8,6 +8,7 @@
 - **三种登录方式**：扫码登录（推荐，手机一扫即可）、邮箱密码登录、直接配置登录令牌
 - **看账**：全量/增量同步账单、按账本分页查询、账单总数、删除记录
 - **管账**：新增、更新、删除账单、资产、账本、标签、转账、借贷、分类、报销、退款、附件
+- **理财**：查看理财持仓与流水，按「份额×净值 + 手续费」补记买入/卖出；基金不在资产里时可先建仓再记账
 - **辅助能力**：一句话记账解析（「午饭 35」自动识别金额和分类）
 - **扫码方便**：二维码直接显示在对话或终端里，不用打开图片文件
 
@@ -86,6 +87,45 @@ default_tools_approval_mode = "writes"
 > 配置 `YIMU_TOKEN_STORE_KEY` 后，登录状态会以 AES-256-GCM 密文保存到 SQLite；未配置密钥时只保留在内存。
 > 三种方式互不影响：二维码/邮箱登录获得的 JWT 会覆盖配置值并更新本地密文。
 
+## 使用手册
+
+### 1. 先看数据：资产与理财
+
+`get_asset_modules` 是一次性拉全「资产 + 理财」的入口：
+
+- `assetSummary`：账户总数、计入总资产合计、按官方账户类型（资金账户/信用卡/充值账户/投资理财/借出/借入/贷款/报销）汇总
+- `modules.Asset`：全部账户（取自 `GET /asset/getAsset`，比同步分页更完整）
+- `modules.StockAsset` / `modules.StockInfo`：理财持仓与理财流水
+- `modules.AssetFixedDeposit` / `Instalment` / `Budget` / `CategoryBudget`：定期存款、分期、预算与分类预算
+- `counts`：借贷、资产变动、转账、退款、报销等模块的去重数量（不含明细）
+- `pages` / `hasMoreData`：本次翻页情况，`hasMoreData=false` 才代表取全
+
+### 2. 按「份额×净值」补充记账
+
+场景：在基金平台确认了份额与净值，要补记进一木记账。
+
+1. 查有没有建仓：`get_asset_modules` → `modules.StockAsset`，按 `name`/`code` 找 `stockAssetId`（场外基金代码形如 `of017091`）。
+2. 没建仓先建：`save_stock_fund`，传 `name`、`code`（6 位纯数字自动补 `of` 前缀）、`group_name`，返回新建的 `stockAssetId`。
+3. 记流水：`save_stock_trade`
+   - `stock_asset_id` 持仓；`type` 2 买入 / 1 卖出
+   - `cost`（确认净值）+ `num`（确认份额）→ 自动计算 `totalCost = 净值 × 份额`；`service_charge` 手续费
+   - `trade_time` 买入日期、`confirm_time` 确认日期、`asset_id` 付款账户（0 表示无账户）、`remark` 备注
+   - 只给 `total_cost` 即为「总额×手续费」录入方式；返回 `stockInfoId` 与算出的 `totalCost` 供核对
+4. 核对：再跑 `get_asset_modules`，`modules.StockInfo` 里应出现这条流水。
+5. 记错要撤：`delete_stock_info`（传 `stockInfoId`）；持仓建错用 `delete_stock_asset`。服务端保留删除留痕，`get_delete_history` 可查。
+
+`info_status` 缺省：按份额×净值录入视为已确认 `0`，只给总额视为待确认 `1`（等 App 确认）。
+
+### 3. 边界与已知坑
+
+- **分页**：`/updateTime/getUpdateDataPage` 按 `syncTime` 游标分页，单页只返回部分记录（账单每页上限 1000 条）。只读第一页会得到假数据（本项目出现过「只有 1 个资产、0 笔理财」的误判），必须翻到 `hasMoreData=false`。
+- **主键由客户端生成**：`stockAssetId`、`stockInfoId` 缺失时服务端返回 `{"msg":"success","result":null,"code":0}` 却不落库（静默失败）。`save_stock_fund` / `save_stock_trade` 会自动补主键；走通用工具 `save_stock_asset` / `save_stock_info` 时需要自己带。
+- **空结果**：写操作服务端返回 `result:null`，工具显示「操作已完成（服务端未返回数据）」是成功而非异常，以回查数据为准。
+- **持仓不会自动重算**：流水只记录份额与净值；`StockAsset.primeCost` / `primeNum` 由 App 维护，MCP 写入不会改变持仓成本价与份额。
+- **预算去重**：月度总预算的 `budgetId` 恒为 `0`，跨页去重只能用服务端行 `id`。
+- **理财流水网页端不可编辑**：网页版没有理财流水编辑入口，写入走 App 侧接口（`/stockInfo/addOrUpdateStockInfo`、`/stockAsset/addOrUpdateStockAsset`），且会触发 MCP 写操作确认。
+- **批量写**：连续多次写入前可先 `sync_start`，写完 `sync_end` 归还会话，避免触发同步限流。
+
 ## 安全说明
 
 - 密码仅从环境变量读取，提交时 AES-128-ECB 加密，不落盘、不进入 MCP 参数；`--print-config` 不打印凭据明文。
@@ -104,7 +144,7 @@ default_tools_approval_mode = "writes"
   `get_share_accounts`（共享账本）、`get_account_members`（账本成员）、`get_delete_history`（删除记录）
 
 - **记账**：`save_bill` / `save_bills`（单条/批量新增或更新）、`delete_bill`（删除）
-- **理财记账**：`save_stock_trade`（按「份额×净值」补充理财买入/卖出，自动计算金额；网页端没有理财流水编辑入口，写入走 App 侧接口 `POST /stockInfo/addOrUpdateStockInfo`。实体主键由客户端生成，新增时工具会自动补 `stockInfoId`，缺失该字段服务端会返回 success 但不落库）
+- **理财记账**：`save_stock_fund`（基金不在资产里时先建仓，返回 `stockAssetId`）、`save_stock_trade`（按「份额×净值」补充买入/卖出，自动计算金额并返回 `stockInfoId` 与 `totalCost`）。网页端没有理财流水编辑入口，写入走 App 侧接口 `POST /stockAsset/addOrUpdateStockAsset`、`POST /stockInfo/addOrUpdateStockInfo`；实体主键由客户端生成，工具会自动补 `stockAssetId` / `stockInfoId`，缺失时服务端返回 success 但不落库
 - **其他实体**：`save_asset` `save_account_book` `save_tag` `save_transfer` `save_lend`
   `save_parent_category` `save_child_category` `save_reimbursement` `save_refund`
   `save_bill_file` `save_bill_import` `save_asset_history` `save_stock_asset` `save_stock_info`（对应删除用 `delete_*`）

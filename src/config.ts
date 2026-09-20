@@ -213,6 +213,22 @@ if (hasFlag("help") || hasFlag("h")) {
 配置文件示例（yimu.config.json）：
   { "token": "<JWT>", "userId": 123456, "qrDir": "C:/temp/yimu-qr" }
 
+理财补记流程（份额×净值 + 手续费）：
+  1) get_asset_modules                        查持仓与流水（翻页到底，看 modules.StockAsset / modules.StockInfo）
+  2) save_stock_fund    name=... code=...     基金不在资产里时先建仓，返回 stockAssetId
+  3) save_stock_trade   stock_asset_id=... type=2 cost=净值 num=份额 service_charge=手续费
+                                              金额自动按 净值×份额 计算，返回 stockInfoId 与 totalCost
+  4) get_asset_modules                        再查一次，核对流水已落库
+  5) delete_stock_info  stockInfoId=...       记错了就删除（服务端保留删除留痕）
+
+常见坑（都已修复，但要知道边界）：
+  - 增量同步接口按 syncTime 游标分页，单页只返回部分记录；只读首页会漏掉绝大多数资产/理财数据，必须翻到 hasMoreData=false
+  - 实体主键由客户端生成：新增持仓/流水要自带 stockAssetId / stockInfoId，缺失时服务端返回 success 却不落库（工具已自动补）
+  - 写操作返回 result:null，工具显示「操作已完成（服务端未返回数据）」属正常，回查数据确认即可
+  - 月度总预算的 budgetId 恒为 0，跨页去重只能用服务端行 id
+  - 持仓的 primeCost/primeNum 由 App 维护，MCP 只写流水，不会自动改持仓成本价与份额
+  - 网页端不提供理财流水编辑入口，写入走 App 侧接口（/stockInfo、/stockAsset）
+
 MCP 工具：auth_status / login_qr_start / login_qr_poll / login_email / get_me /
 sync_start / sync_end / sync_pull / get_delete_history / get_bill_count /
 get_book_bills / get_book_last_time / get_share_accounts / get_assets / get_asset_modules /
@@ -223,6 +239,7 @@ save_transfer / delete_transfer / save_lend / delete_lend /
 save_parent_category / delete_parent_category / save_child_category / delete_child_category /
 save_reimbursement / delete_reimbursement / save_refund / delete_refund /
 save_bill_file / delete_bill_file / save_bill_import / save_asset_history / delete_asset_history /
+save_stock_fund / save_stock_trade / save_stock_asset / delete_stock_asset / save_stock_info / delete_stock_info /
 parse_bill_text`);
   process.exit(0);
 }
