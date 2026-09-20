@@ -64,6 +64,15 @@ default_tools_approval_mode = "writes"
 
 只有本地环境中已设置的变量才会传给服务；不要把 `YIMU_TOKEN_STORE_KEY` 的实际值写入 Codex 配置或仓库。写入和删除工具应始终由 Codex 请求确认。
 
+### 固定登录流程（Codex）
+
+1. 设置 `YIMU_TOKEN_STORE_KEY` 后完全退出并重启 Codex，使 `yimu` MCP 进程继承该环境变量。
+2. 在 Codex 对话中调用固定工具 `login_qr_start`，扫描返回的二维码。
+3. 调用 `login_qr_poll`（传入 `session_id`，`timeout` 可设为 120）完成登录。
+4. 登录成功后服务自动将令牌加密保存到 `YIMU_TOKEN_DB`；以后重启 Codex 会自动恢复。
+
+整个流程由已注册的 `yimu` MCP 服务完成，不需要临时 Node/Python 文件或手工复制 JWT。
+
 ## 登录
 
 1. **扫码登录（推荐）**：调用 `login_qr_start`，二维码直接显示在对话或终端里；
