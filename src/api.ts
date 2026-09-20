@@ -103,8 +103,6 @@ export class YimuClient {
       body?: unknown;
       /** 表单请求体（application/x-www-form-urlencoded） */
       form?: Record<string, string>;
-      /** 不套用信封解包（如 getSts 返回原始体） */
-      raw?: boolean;
     } = {},
   ): Promise<unknown> {
     let p = path;
@@ -138,7 +136,7 @@ export class YimuClient {
         headers,
         body,
         signal: AbortSignal.timeout(this.timeoutMs),
-        redirect: "follow",
+        redirect: "error",
       });
     } catch (e) {
       throw new YimuError(`网络请求失败: ${(e as Error).message}`, e);
@@ -154,7 +152,6 @@ export class YimuClient {
       const text = await res.text().catch(() => "");
       throw new YimuError(`响应不是 JSON: ${text.slice(0, 200)}`, e);
     }
-    if (opts.raw) return data;
     // 登录/扫码/查用户接口的顶层 token 刷新 JWT
     if (data && typeof data === "object") {
       const d = data as Record<string, unknown>;
@@ -270,15 +267,6 @@ export class YimuClient {
 
   getCategoryInfo(userId: string | number): Promise<unknown> {
     return this.request("GET", "/icon/getCategoryInfo/{userId}", { params: { userId } });
-  }
-
-  /** 对象存储临时凭证：返回原始响应体（code/result 均保留） */
-  async getSts(userId: string | number): Promise<unknown> {
-    return this.request("GET", "/app/getSts/{userId}", { params: { userId }, raw: true });
-  }
-
-  async getStsNoVerify(): Promise<unknown> {
-    return this.request("GET", "/app/getStsNoVerify/", { raw: true });
   }
 
   // ---------------- 写入 ----------------

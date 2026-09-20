@@ -103,6 +103,28 @@ function fromFile(cfg: { data: Record<string, unknown> } | null, s: Setting): st
   return "";
 }
 
+function normalizeBaseUrl(raw: string): string {
+  const value = raw.replace(/\/+$/, "");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    fail("YIMU_BASE_URL 必须是有效的 URL");
+  }
+  const host = url.hostname.toLowerCase();
+  const loopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  if (url.username || url.password) {
+    fail("YIMU_BASE_URL 不得包含用户名或密码");
+  }
+  if (!loopback && (url.protocol !== "https:" || host !== "yimubill.com" || (url.port && url.port !== "443"))) {
+    fail("YIMU_BASE_URL 只允许 https://yimubill.com；本地调试可使用 localhost/127.0.0.1");
+  }
+  if (loopback && url.protocol !== "http:" && url.protocol !== "https:") {
+    fail("本地 YIMU_BASE_URL 只允许 HTTP 或 HTTPS");
+  }
+  return value;
+}
+
 const cfg = loadConfigFile();
 for (const s of SETTINGS) {
   let value = "";
@@ -130,7 +152,7 @@ export const CONFIG = {
   token: RESOLVED.token.value,
   userToken: RESOLVED.userToken.value,
   userId: RESOLVED.userId.value,
-  baseUrl: RESOLVED.baseUrl.value.replace(/\/+$/, ""),
+  baseUrl: normalizeBaseUrl(RESOLVED.baseUrl.value),
   timeoutMs: Math.max(1000, Number(RESOLVED.timeoutMs.value) || 30000),
   qrDir: RESOLVED.qrDir.value || defaultQrDir(),
   email: RESOLVED.email.value,
@@ -156,7 +178,7 @@ if (hasFlag("help") || hasFlag("h")) {
 参数/环境变量/配置文件（优先级从高到低）：
   --token / YIMU_TOKEN         账号 JWT（登录后获得；扫码/邮箱登录工具会更新它）
   --user-id / YIMU_USER_ID     用户 ID（部分接口路径参数需要；登录后可自动获取）
-  --base-url / YIMU_BASE_URL   API 基址，默认 https://yimubill.com/api
+  --base-url / YIMU_BASE_URL   API 基址，默认 https://yimubill.com/api；仅允许官方 HTTPS 地址或本地回环地址
   --timeout-ms / YIMU_TIMEOUT  请求超时毫秒，默认 30000
   --config / YIMU_CONFIG       配置文件路径，默认 ./yimu.config.json
 
@@ -175,7 +197,7 @@ if (hasFlag("help") || hasFlag("h")) {
 配置文件示例（yimu.config.json）：
   { "token": "<JWT>", "userId": 123456, "qrDir": "C:/temp/yimu-qr" }
 
-MCP 工具：auth_status / login_qr_start / login_qr_poll / login_qr_recognize / login_email / get_me /
+MCP 工具：auth_status / login_qr_start / login_qr_poll / login_email / get_me /
 sync_start / sync_end / sync_pull / get_delete_history / get_bill_count /
 get_book_bills / get_book_last_time / get_share_accounts / get_assets /
 get_account_members / get_account_delete_history / get_currency / get_category_info /
@@ -185,7 +207,7 @@ save_transfer / delete_transfer / save_lend / delete_lend /
 save_parent_category / delete_parent_category / save_child_category / delete_child_category /
 save_reimbursement / delete_reimbursement / save_refund / delete_refund /
 save_bill_file / delete_bill_file / save_bill_import / save_asset_history / delete_asset_history /
-parse_bill_text / get_sts / api_request`);
+parse_bill_text`);
   process.exit(0);
 }
 

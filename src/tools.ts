@@ -4,7 +4,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { YimuClient, YimuError } from "./api.ts";
-import { renderQrPng, renderQrTerminal, saveQrPng, recognizeQrImage } from "./qr.ts";
+import { renderQrPng, renderQrTerminal, saveQrPng } from "./qr.ts";
 import { prune, projectEntity, sanitizeUser, roundMoney, fmtDate } from "./prune.ts";
 
 type Handler = (args: Record<string, unknown>) => Promise<unknown>;
@@ -19,7 +19,7 @@ interface QrResult {
 }
 
 /** 统一输出：QrResult 渲染为 文本+图片 内容块；其余 JSON 序列化 */
-const out = (v: unknown, opts?: { noPrune?: boolean }): { content: ContentBlock[] } => {
+const out = (v: unknown): { content: ContentBlock[] } => {
   if (
     v &&
     typeof v === "object" &&
@@ -31,7 +31,7 @@ const out = (v: unknown, opts?: { noPrune?: boolean }): { content: ContentBlock[
     if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
     return { content };
   }
-  const data = opts?.noPrune ? v : prune(v);
+  const data = prune(v);
   return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 1) }] };
 };
 
@@ -85,10 +85,10 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  /** 免鉴权工具（登录/扫码/同步会话/STS NoVerify） */
+  /** 免鉴权工具（登录/扫码/同步会话） */
   noAuth?: boolean;
-  /** 跳过输出裁剪（api_request 逃生通道原样返回） */
-  noPrune?: boolean;
+  /** 破坏性写操作，交给 MCP 客户端单独提示确认 */
+  destructive?: boolean;
   handler: Handler;
 }
 
@@ -185,8 +185,25 @@ export function registerYimuTools(
       );
     }
   };
-  const uid = (args: Record<string, unknown>): string =>
-    str(args.user_id || args.userId) || client.userId;
+  const uid = (args: Record<string, unknown>): string => {
+    const requested = str(args.user_id || args.userId);
+    if (!client.userId) {
+      if (requested) {
+        throw new YimuError("无法确认当前登录用户 ID：请配置 YIMU_USER_ID 或先登录");
+      }
+      return "";
+    }
+    if (requested && requested !== client.userId) {
+      throw new YimuError("user_id 必须与当前登录用户一致");
+    }
+    return client.userId;
+  };
+  const ownUser = (obj: Record<string, unknown>): Record<string, unknown> => {
+    const id = uid({});
+    if (!id) throw new YimuError("缺少当前登录用户 ID：请配置 YIMU_USER_ID 或先登录");
+    obj.userId = Number(id) || id;
+    return obj;
+  };
 
   const tools: ToolDef[] = [
     // ---------------- 认证 ----------------
@@ -256,7 +273,7 @@ export function registerYimuTools(
         const deadline = Date.now() + timeout * 1000;
         for (;;) {
           const user = await client.getScanLogin(sid);
-          if (user) return { status: "success", user: sanitizeUser(user), token: client.token };
+          if (user) return { status: "success", user: sanitizeUser(user), token_set: Boolean(client.token), user_id: client.userId || null };
           if (timeout === 0 || Date.now() >= deadline) {
             return { status: "pending", hint: "等待扫码或登录尚未完成；可再次调用本工具（传 timeout 秒数则自动等待）" };
           }
@@ -267,46 +284,27 @@ export function registerYimuTools(
       },
     },
     {
-      name: "login_qr_recognize",
-      description:
-        "从 PNG 图片识别二维码内容（免鉴权，测试/自动登录链路校验用）：传入图片路径，返回二维码文本与 session_id。" +
-        "可用于验证 login_qr_start 生成的二维码文件内容是否为 login:<session_id>。",
-      inputSchema: {
-        type: "object",
-        properties: { image_path: { type: "string", description: "PNG 二维码图片文件路径" } },
-        required: ["image_path"],
-        additionalProperties: false,
-      },
-      noAuth: true,
-      handler: async (a) => {
-        const text = await recognizeQrImage(str(a.image_path));
-        const m = /^login:(.+)$/.exec(text);
-        return { text, session_id: m ? m[1] : null, is_login_qr: Boolean(m) };
-      },
-    },
-    {
       name: "login_email",
       description:
-        "邮箱密码登录（免鉴权）。密码按网页端加密方案（AES-128-ECB）加密后提交；返回用户对象与 JWT。" +
-        "不传 email/password 时使用环境变量 YIMU_EMAIL/YIMU_PASSWORD（未配置则报错）。" +
+        "邮箱密码登录（免鉴权）。密码只从环境变量 YIMU_PASSWORD 读取，不接受 MCP 参数，也不会返回 JWT。" +
+        "邮箱缺省时使用环境变量 YIMU_EMAIL（未配置则报错）。" +
         "请优先使用扫码登录（更安全）。",
       inputSchema: {
         type: "object",
         properties: {
           email: { type: "string", description: "一木记账账号邮箱；缺省用环境变量 YIMU_EMAIL" },
-          password: { type: "string", description: "账号密码；缺省用环境变量 YIMU_PASSWORD（仅本次调用，不落盘）" },
         },
         additionalProperties: false,
       },
       noAuth: true,
       handler: async (a) => {
         const email = str(a.email) || creds.email;
-        const password = str(a.password) || creds.password;
+        const password = creds.password;
         if (!email || !password) {
-          throw new YimuError("缺少邮箱或密码：请传 email/password 参数，或在环境变量配置 YIMU_EMAIL/YIMU_PASSWORD");
+          throw new YimuError("缺少邮箱或密码：请在环境变量配置 YIMU_EMAIL/YIMU_PASSWORD，或使用扫码登录");
         }
         const user = await client.loginByEmail(email, password);
-        return { user: sanitizeUser(user as Record<string, unknown>), token: client.token };
+        return { user: sanitizeUser(user as Record<string, unknown>), token_set: Boolean(client.token), user_id: client.userId || null };
       },
     },
     {
@@ -596,7 +594,7 @@ export function registerYimuTools(
         requireAuth(a);
         const b = a.bill as Record<string, unknown>;
         if (!b || typeof b !== "object") throw new YimuError("bill 必须是对象");
-        if (b.userId === undefined && client.userId) b.userId = Number(client.userId) || client.userId;
+        ownUser(b);
         return client.addOrUpdateBill(b);
       },
     },
@@ -617,12 +615,7 @@ export function registerYimuTools(
         requireAuth(a);
         const list = a.bills;
         if (!Array.isArray(list) || list.length === 0) throw new YimuError("bills 必须是非空数组");
-        const userId = Number(client.userId) || client.userId;
-        const bills = list.map((b) => {
-          const obj = (b ?? {}) as Record<string, unknown>;
-          if (obj.userId === undefined && client.userId) obj.userId = userId;
-          return obj;
-        });
+        const bills = list.map((b) => ownUser((b ?? {}) as Record<string, unknown>));
         return client.addOrUpdateBillList(bills);
       },
     },
@@ -638,9 +631,12 @@ export function registerYimuTools(
         required: ["bill_id"],
         additionalProperties: false,
       },
+      destructive: true,
       handler: async (a) => {
         requireAuth(a);
-        return client.deleteBill(str(a.bill_id), uid(a) || undefined);
+        const id = uid(a);
+        if (!id) throw new YimuError("缺少当前登录用户 ID：请配置 YIMU_USER_ID 或先登录");
+        return client.deleteBill(str(a.bill_id), id);
       },
     },
 
@@ -660,7 +656,7 @@ export function registerYimuTools(
           requireAuth(a);
           const e = a.entity as Record<string, unknown>;
           if (!e || typeof e !== "object") throw new YimuError("entity 必须是对象");
-          if (e.userId === undefined && client.userId) e.userId = Number(client.userId) || client.userId;
+          ownUser(e);
           return client.addOrUpdateEntity(ep.domain, `addOrUpdate${cap}`, e);
         },
       };
@@ -673,11 +669,12 @@ export function registerYimuTools(
           required: ["entity"],
           additionalProperties: false,
         },
+        destructive: true,
         handler: async (a) => {
           requireAuth(a);
           const e = a.entity as Record<string, unknown>;
           if (!e || typeof e !== "object") throw new YimuError("entity 必须是对象");
-          if (e.userId === undefined && client.userId) e.userId = Number(client.userId) || client.userId;
+          ownUser(e);
           return client.addOrUpdateEntity(ep.domain, `delete${cap}`, e);
         },
       };
@@ -704,63 +701,24 @@ export function registerYimuTools(
         return client.parseBillText(id, str(a.text));
       },
     },
-    {
-      name: "get_sts",
-      description: "获取对象存储临时凭证（GET /app/getSts/{userId}，返回原始响应体）。",
-      inputSchema: {
-        type: "object",
-        properties: { user_id: { type: "string" } },
-        additionalProperties: false,
-      },
-      handler: async (a) => {
-        requireAuth(a);
-        const id = uid(a);
-        if (!id) throw new YimuError("缺少用户 ID");
-        return client.getSts(id);
-      },
-    },
-    {
-      name: "get_sts_no_verify",
-      description: "获取对象存储临时凭证（免鉴权变体，GET /app/getStsNoVerify/，返回原始响应体）。",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      noAuth: true,
-      handler: async () => client.getStsNoVerify(),
-    },
-    {
-      name: "api_request",
-      description:
-        "通用 API 请求（逃生通道，覆盖全部接口）。path 支持 {userId}/{bookId}/{time} 等占位符由 params 填充；" +
-        "自动携带 token 头并解包 {code,msg,result} 信封。可用路径见 README 接口清单；" +
-        "例如：{method:POST, path:/bill/addOrUpdateBill, body:{...}}、{method:GET, path:/bill/getBillCount/{userId}, params:{userId:123}}。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          method: { type: "string", enum: ["GET", "POST"], description: "HTTP 方法" },
-          path: { type: "string", description: "接口路径，如 /user/getUserInfoById 或 /bookkeeping/rateLimit/sync/start" },
-          params: { type: "object", description: "路径占位符 {x} 的取值" },
-          query: { type: "object", description: "查询参数" },
-          body: { type: "object", description: "JSON 请求体" },
-          form: { type: "object", description: "表单请求体（application/x-www-form-urlencoded）" },
-          raw: { type: "boolean", description: "true 时不套信封解包，返回原始响应体" },
-        },
-        required: ["method", "path"],
-        additionalProperties: false,
-      },
-      noPrune: true,
-      handler: async (a) => {
-        requireAuth(a);
-        const method = String(a.method).toUpperCase();
-        const path = str(a.path);
-        return client.request(method, path, {
-          params: (a.params as Record<string, string | number> | undefined) ?? {},
-          query: (a.query as Record<string, string | number> | undefined) ?? {},
-          body: a.body,
-          form: a.form as Record<string, string> | undefined,
-          raw: Boolean(a.raw),
-        });
-      },
-    },
   ];
+
+  const READ_ONLY_TOOLS = new Set([
+    "auth_status",
+    "get_me",
+    "sync_pull",
+    "get_delete_history",
+    "get_bill_count",
+    "get_book_bills",
+    "get_book_last_time",
+    "get_share_accounts",
+    "get_assets",
+    "get_account_members",
+    "get_account_delete_history",
+    "get_currency",
+    "get_category_info",
+    "parse_bill_text",
+  ]);
 
   for (const t of tools) {
     const guard = async (
@@ -769,14 +727,22 @@ export function registerYimuTools(
       try {
         const a = (args ?? {}) as Record<string, unknown>;
         if (!t.noAuth) requireAuth(a);
-        return out(await t.handler(a), t.noPrune ? { noPrune: true } : undefined);
+        return out(await t.handler(a));
       } catch (e) {
         return { isError: true, content: [{ type: "text", text: (e as Error).message }] };
       }
     };
     server.registerTool(
       t.name,
-      { title: t.name, description: t.description, inputSchema: toShape(t.inputSchema) },
+      {
+        title: t.name,
+        description: t.description,
+        inputSchema: toShape(t.inputSchema),
+        annotations: {
+          readOnlyHint: READ_ONLY_TOOLS.has(t.name),
+          destructiveHint: t.destructive === true,
+        },
+      },
       guard,
     );
   }

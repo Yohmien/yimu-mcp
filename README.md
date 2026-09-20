@@ -8,24 +8,28 @@
 - **三种登录方式**：扫码登录（推荐，手机一扫即可）、邮箱密码登录、直接配置登录令牌
 - **看账**：全量/增量同步账单、按账本分页查询、账单总数、删除记录
 - **管账**：新增、更新、删除账单、资产、账本、标签、转账、借贷、分类、报销、退款、附件
-- **辅助能力**：一句话记账解析（「午饭 35」自动识别金额和分类）、对象存储凭证、通用接口请求
+- **辅助能力**：一句话记账解析（「午饭 35」自动识别金额和分类）
 - **扫码方便**：二维码直接显示在对话或终端里，不用打开图片文件
 
 ## 快速开始
 
 需要 Node ≥ 23.4 或 Bun ≥ 1.x。
 
-安装：
+安装（使用个人 fork）：
 
 ```bash
-npm install -g @powercess/yimu-mcp
-yimu-mcp        # 启动 MCP 服务
+git clone https://github.com/Yohmien/yimu-mcp.git
+cd yimu-mcp
+npm ci --ignore-scripts
+npm run build
 ```
 
-本地开发：
+Codex 直接使用构建后的 `dist/index.js`，无需全局安装 npm 包。
+
+本地验证：
 
 ```bash
-npm install && npm run build   # Node
+npm run build                 # Node
 # 或
 bun install && bun run dev      # Bun，直接运行，无需构建
 ```
@@ -37,36 +41,33 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 | 环境变量 | 说明 |
 |---|---|
 | `YIMU_TOKEN` | 登录令牌 JWT（登录后获得，优先级最高） |
-| `YIMU_EMAIL` / `YIMU_PASSWORD` | 账号邮箱/密码（可选：未配 TOKEN 时启动自动登录；`login_email` 不传参时用这对凭据） |
+| `YIMU_EMAIL` / `YIMU_PASSWORD` | 账号邮箱/密码（可选：未配 TOKEN 时启动自动登录；`login_email` 只从这里读取密码） |
 | `YIMU_USER_ID` | 用户 ID（部分接口需要，登录后自动获取） |
-| `YIMU_BASE_URL` | 服务地址，默认 `https://yimubill.com/api` |
+| `YIMU_BASE_URL` | API 地址，默认 `https://yimubill.com/api`；只允许官方 HTTPS 地址或本地回环地址 |
 | `YIMU_QR_DIR` | 二维码保存目录，默认系统临时目录 |
 
-令牌可从一木记账网页版浏览器开发者工具里复制请求头 `token` 的值。
+优先使用扫码登录；如使用 `YIMU_TOKEN`，只通过本地环境变量传入，不要写入 Codex 配置文件或聊天内容。
 
 ## 接入 MCP 客户端
 
-全局安装后：
+Codex 配置（`~/.codex/config.toml`）：
 
-```json
-{
-  "mcpServers": {
-    "yimu": {
-      "command": "yimu-mcp",
-      "env": { "YIMU_TOKEN": "你的JWT" }
-    }
-  }
-}
+```toml
+[mcp_servers.yimu]
+command = "node"
+args = ["C:/Users/你的用户名/.codex/mcp/yimu-mcp/dist/index.js"]
+env_vars = ["YIMU_TOKEN", "YIMU_USER_ID"]
+default_tools_approval_mode = "writes"
 ```
 
-仓库本地方式（`command` 指向可执行文件）：`node` + `dist/index.js`，或 `bun` + `src/index.ts`（无需构建）。
+只有本地环境中已设置的 `YIMU_TOKEN` / `YIMU_USER_ID` 才会传给服务；写入和删除工具应始终由 Codex 请求确认。
 
 ## 登录
 
 1. **扫码登录（推荐）**：调用 `login_qr_start`，二维码直接显示在对话或终端里；
    手机打开一木记账 App，首页 → 更多 → 扫一扫，扫完调用 `login_qr_poll` 等待登录结果。
-2. **邮箱密码登录**：调用 `login_email`，填邮箱和密码即可，密码加密传输；
-   不传参数时自动使用环境变量 `YIMU_EMAIL` / `YIMU_PASSWORD`。
+2. **邮箱密码登录**：调用 `login_email`，可传邮箱；密码只从环境变量 `YIMU_PASSWORD` 读取，
+   MCP 不接收密码参数，也不会返回 JWT。
 3. **JWT 直配**：在环境变量里配好 `YIMU_TOKEN`，启动即已登录。
 
 > 配了 `YIMU_EMAIL` / `YIMU_PASSWORD` 而未配 TOKEN 时，服务启动会自动登录获取 JWT，
@@ -75,8 +76,10 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 
 ## 安全说明
 
-- 密码仅存于环境变量，提交时 AES-128-ECB 加密，不落盘、不进仓库；`--print-config` 不打印任何凭据明文。
-- 在 hub 等平台配置 `YIMU_PASSWORD` 前，请确认其环境变量存储方式；优先用 `YIMU_TOKEN` 或扫码登录。
+- 密码仅从环境变量读取，提交时 AES-128-ECB 加密，不落盘、不进入 MCP 参数；`--print-config` 不打印凭据明文。
+- 登录成功只返回 `token_set` 和用户 ID，JWT 保留在服务进程内存中，不进入模型上下文。
+- API 基址固定限制为 `https://yimubill.com` 或本地回环地址，且请求不跟随重定向，避免 token 被转发到其他主机。
+- 不提供通用 API、STS 凭证或任意本地图片读取工具；写入/删除工具带有 MCP 权限提示标记。
 
 ## 工具一览
 
@@ -89,8 +92,7 @@ bun install && bun run dev      # Bun，直接运行，无需构建
 - **其他实体**：`save_asset` `save_account_book` `save_tag` `save_transfer` `save_lend`
   `save_parent_category` `save_child_category` `save_reimbursement` `save_refund`
   `save_bill_file` `save_bill_import` `save_asset_history`（对应删除用 `delete_*`）
-- **辅助**：`parse_bill_text`（一句话记账解析）、`get_sts`（对象存储凭证）、
-  `api_request`（通用请求，可覆盖全部接口）
+- **辅助**：`parse_bill_text`（一句话记账解析）
 
 ## License
 
