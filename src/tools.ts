@@ -32,7 +32,9 @@ const out = (v: unknown): { content: ContentBlock[] } => {
     return { content };
   }
   const data = prune(v);
-  return { content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 1) }] };
+  // 写操作服务端返回 result:null，prune 后为空；此时 text 必须是字符串，否则 MCP 客户端判定内容块非法
+  const text = typeof data === "string" ? data : JSON.stringify(data, null, 1);
+  return { content: [{ type: "text", text: text === undefined ? "操作已完成（服务端未返回数据）" : text }] };
 };
 
 interface PropSchema {
@@ -128,7 +130,8 @@ const SCHEMA_HINTS: Record<string, string> = {
   StockInfo:
     "stockInfoId 主键；stockAssetId 所属持仓；type 方向（2 买入、1 卖出）；cost 确认净值；num 确认份额；totalCost 金额（净值×份额）；" +
     "serviceCharge 手续费；doTime 买入/卖出时间(ms)；endTime 确认时间(ms)；assetId 付款/收款账户（0 表示无账户）；" +
-    "infoStatus 状态（1 待确认、2 失败）；autoIncome 自动计入收益；billId 关联账单；remark 备注；userId/updateTime 自动填充",
+    "infoStatus 状态（0 已确认、1 待确认、2 失败）；autoIncome 自动计入收益；billId 关联账单；remark 备注；" +
+    "stockInfoId 为主键且需客户端生成，缺失时服务端返回 success 却不落库；userId/updateTime 自动填充",
 };
 
 /** 同步数据摘要：计数 + 收支合计 + 最近10笔 + 分类Top + 资产（面向 AI 分析，避免全量实体淹没上下文） */
@@ -210,6 +213,14 @@ const SYNC_PRIMARY_KEYS: Record<string, string> = {
 
 /** 同步接口默认最大翻页数：服务端按 syncTime 游标分页，hasMoreData 为真时必须继续请求下一页 */
 const SYNC_PAGE_LIMIT = 20;
+
+/**
+ * 客户端业务主键。一木记账的实体主键由客户端生成：POST 时缺少该字段服务端会返回 success 但不落库，
+ * 因此新增理财流水必须自带 stockInfoId（与 App 行为一致）。
+ */
+function randomEntityId(): number {
+  return 1_000_000_000 + Math.floor(Math.random() * 8_999_999_999);
+}
 
 interface SyncModules {
   /** 需要明细的模块：主键 → 记录 */
@@ -816,7 +827,8 @@ export function registerYimuTools(
       name: "save_stock_trade",
       description:
         "理财买入/卖出补充记账（POST /stockInfo/addOrUpdateStockInfo）。按「份额×净值」录入时只给 cost(确认净值) 与 num(确认份额)，自动计算 totalCost=净值×份额；" +
-        "也可只给 total_cost 按总额方式录入。type=2 买入、1 卖出；带 stock_info_id 为更新已有流水。",
+        "也可只给 total_cost 按总额方式录入。type=2 买入、1 卖出；带 stock_info_id 为更新已有流水。" +
+        "新增时主键 stockInfoId 由工具生成（服务端缺少该字段会返回 success 但不落库）；info_status 缺省按录入方式取 0（按份额×净值）或 1（仅总额）。",
       inputSchema: {
         type: "object",
         properties: {
@@ -832,6 +844,7 @@ export function registerYimuTools(
           remark: { type: "string", description: "备注" },
           auto_income: { type: "boolean", description: "是否自动计入收益" },
           stock_info_id: { type: "number", description: "流水主键；传则为更新" },
+          info_status: { type: "number", description: "状态：0 已确认（缺省，按份额×净值录入时）、1 待确认（只给总额时缺省）" },
           user_id: { type: "string" },
         },
         required: ["stock_asset_id", "type"],
@@ -868,8 +881,16 @@ export function registerYimuTools(
           assetId: a.asset_id === undefined ? 0 : num(a.asset_id, 0),
           remark: str(a.remark),
           autoIncome: a.auto_income === true,
+          infoStatus: a.info_status === undefined ? (hasShares ? 0 : 1) : num(a.info_status, 1),
+          billId: 0,
+          updateTime: now,
         };
-        if (a.stock_info_id !== undefined) entity.stockInfoId = num(a.stock_info_id, 0);
+        if (a.stock_info_id === undefined) {
+          entity.id = 0;
+          entity.stockInfoId = randomEntityId();
+        } else {
+          entity.stockInfoId = num(a.stock_info_id, 0);
+        }
         ownUser(entity);
         return client.addOrUpdateEntity("stockInfo", "addOrUpdateStockInfo", entity);
       },
