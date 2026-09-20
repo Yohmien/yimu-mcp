@@ -100,13 +100,17 @@ default_tools_approval_mode = "writes"
 - **登录与账号**：`login_qr_start` `login_qr_poll` `login_email` `get_me` `auth_status`
 - **查询**：`sync_pull`（增量同步，默认返回摘要：计数/收支合计/最近明细/分类Top）、`get_bill_count`（账单总数）、
   `get_book_bills`（账本账单分页，精简账单+收支小计）、
-  `get_assets`（资产，仅业务字段）、`get_asset_modules`（资产/定期/基金股票理财流水与持仓/预算定向摘要）、`get_currency`（币种）、`get_category_info`（分类）、
+  `get_assets`（资产，仅业务字段）、`get_asset_modules`（资产/理财总览：完整账户列表 + 理财持仓与流水 + 定期存款 + 分期 + 预算，按 `syncTime` 游标翻页到底）、`get_currency`（币种）、`get_category_info`（分类）、
   `get_share_accounts`（共享账本）、`get_account_members`（账本成员）、`get_delete_history`（删除记录）
+
 - **记账**：`save_bill` / `save_bills`（单条/批量新增或更新）、`delete_bill`（删除）
 - **其他实体**：`save_asset` `save_account_book` `save_tag` `save_transfer` `save_lend`
   `save_parent_category` `save_child_category` `save_reimbursement` `save_refund`
   `save_bill_file` `save_bill_import` `save_asset_history`（对应删除用 `delete_*`）
 - **辅助**：`parse_bill_text`（一句话记账解析）
+
+> `updateTime/getUpdateDataPage` 是 `syncTime` 游标分页接口：单页只返回部分记录（账单每页上限 1000 条），
+> 只读首页会漏掉绝大多数资产/理财数据。`get_asset_modules` 会翻页到 `hasMoreData=false`，并在结果中返回 `pages`、`hasMoreData` 与各模块去重数量。
 
 ## License
 

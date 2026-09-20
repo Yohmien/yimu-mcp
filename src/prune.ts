@@ -39,7 +39,15 @@ export function fmtDate(ms: unknown): unknown {
 /** 实体投影表：只保留 AI 分析相关的业务字段（服务端同步/UI 字段一律丢弃） */
 const PROJECTIONS: Record<string, string[]> = {
   Bill: ["billId", "cost", "time", "parentCategoryId", "childCategoryId", "remark", "assetId", "bookId", "tags", "reimbursement"],
-  Asset: ["assetId", "assetName", "assetNumber", "assetType", "groupName", "intoTotalAsset"],
+  Asset: [
+    "assetId", "assetName", "assetType", "groupName", "assetNumber", "totalQuota", "currency",
+    "cardCode", "simpleName", "remark", "intoTotalAsset", "hide", "positionWeight",
+    "inAccountDate", "outAccountDate",
+  ],
+  AssetFixedDeposit: ["fixedDepositId", "assetId", "billId", "depositNum", "depositRate", "depositTerm", "termUnit", "startTime", "remark"],
+  Instalment: ["instalmentId", "billId", "assetId", "totalNumber", "serviceNumber", "periods", "instalmentType", "serviceType", "remainderType", "accountMonth", "inAssetTime"],
+  Budget: ["budgetId", "bookId", "year", "month", "type", "num", "addNum", "budgetName", "positionWeight", "startTime", "endTime"],
+  CategoryBudget: ["categoryBudgetId", "budgetId", "bookId", "year", "month", "parentCategory", "childCategory", "num", "addNum", "positionWeight"],
   ParentCategory: ["categoryId", "categoryName", "categoryType"],
   ChildCategory: ["categoryId", "categoryName", "parentCategoryId", "categoryType"],
   Transfer: ["transferId", "cost", "serviceCharge", "time", "fromAssetId", "toAssetId", "toCost", "billId", "remark"],
@@ -47,8 +55,8 @@ const PROJECTIONS: Record<string, string[]> = {
   Refund: ["refundId", "billId", "refundNum"],
   BillFile: ["fileId", "billId", "fileName", "fileSize"],
   AssetHistory: ["assetHistoryId", "assetId", "time", "currentNum", "changeNum", "changeContent"],
-  StockInfo: ["stockInfoId", "stockAssetId", "assetId", "type", "num", "cost", "serviceCharge", "totalCost", "doTime", "endTime", "autoIncome", "infoStatus"],
-  StockAsset: ["stockAssetId", "name", "code", "assetId", "type", "num", "cost", "totalCost", "profit", "profitRate", "currentPrice", "currentValue"],
+  StockInfo: ["stockInfoId", "stockAssetId", "assetId", "billId", "type", "num", "cost", "serviceCharge", "totalCost", "doTime", "endTime", "infoStatus", "autoIncome", "remark"],
+  StockAsset: ["stockAssetId", "name", "code", "assetType", "groupName", "primeCost", "primeNum", "intoTotalAsset", "upDownToTotal", "monetary", "positionWeight", "historyIncome", "remark"],
   Tag: ["tagId", "tagName"],
   AccountBook: ["accountBookId", "bookName", "bookType"],
 };
@@ -61,14 +69,17 @@ const MONEY_FIELDS: Record<string, true> = {
   interest: true,
   refundNum: true,
   assetNumber: true,
+  totalQuota: true,
+  depositNum: true,
   currentNum: true,
   changeNum: true,
   totalCost: true,
-  currentPrice: true,
-  currentValue: true,
-  profit: true,
+  historyIncome: true,
 };
-const DATE_FIELDS: Record<string, true> = { time: true, outTime: true, inTime: true, doTime: true, endTime: true };
+// 净值单价 primeCost 与份额 primeNum 是精确值，不做两位小数规整
+const DATE_FIELDS: Record<string, true> = {
+  time: true, outTime: true, inTime: true, doTime: true, endTime: true, startTime: true, inAssetTime: true,
+};
 
 /** 实体投影：保留业务字段并规整数值/日期；未知实体仅做空值裁剪 */
 export function projectEntity(type: string, obj: Record<string, unknown>): unknown {

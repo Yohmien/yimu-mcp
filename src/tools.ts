@@ -172,6 +172,115 @@ function summarizeSync(d: Record<string, unknown>): unknown {
   });
 }
 
+/** 资产账户类型（与网页端枚举一致） */
+const ASSET_TYPE_LABELS: Record<string, string> = {
+  "1": "资金账户",
+  "2": "信用卡",
+  "3": "充值账户",
+  "4": "投资理财",
+  "5": "二手货物",
+  "6": "借出",
+  "7": "借入",
+  "8": "贷款",
+  "9": "报销",
+};
+
+/** 同步接口分页主键：跨页合并同一条记录时保留 updateTime 最新者 */
+const SYNC_PRIMARY_KEYS: Record<string, string> = {
+  Asset: "assetId",
+  StockAsset: "stockAssetId",
+  StockInfo: "stockInfoId",
+  AssetFixedDeposit: "fixedDepositId",
+  Instalment: "instalmentId",
+  // 月度总预算的 budgetId 恒为 0，只能用服务端行 id 去重
+  Budget: "id",
+  CategoryBudget: "categoryBudgetId",
+  Transfer: "transferId",
+  Lend: "lendId",
+  Refund: "refundId",
+};
+
+/** 同步接口默认最大翻页数：服务端按 syncTime 游标分页，hasMoreData 为真时必须继续请求下一页 */
+const SYNC_PAGE_LIMIT = 20;
+
+interface SyncModules {
+  /** 需要明细的模块：主键 → 记录 */
+  modules: Record<string, Map<string, Record<string, unknown>>>;
+  /** 全部模块的去重计数 */
+  counts: Record<string, Set<string>>;
+  syncTime: number;
+  pages: number;
+  hasMoreData: boolean;
+}
+
+/**
+ * 分页拉取增量同步数据。服务端单页只返回部分记录（账单每页上限 1000 条），
+ * 只取首页会漏掉绝大多数资产/理财数据，因此按 hasMoreData 持续翻页并按主键合并。
+ */
+async function collectSyncModules(client: YimuClient, userId: string, since: number, maxPages: number): Promise<SyncModules> {
+  const modules: Record<string, Map<string, Record<string, unknown>>> = {};
+  const counts: Record<string, Set<string>> = {};
+  let time = since;
+  let syncTime = since;
+  let pages = 0;
+  let hasMoreData = false;
+  while (pages < maxPages) {
+    const page = (await client.getUpdateDataPage(userId, time)) as Record<string, unknown> | null;
+    if (!page || typeof page !== "object") break;
+    pages += 1;
+    for (const [key, value] of Object.entries(page)) {
+      if (!Array.isArray(value)) continue;
+      const primary = SYNC_PRIMARY_KEYS[key];
+      const seen = (counts[key] ??= new Set());
+      const bucket = primary ? (modules[key] ??= new Map()) : undefined;
+      for (const raw of value) {
+        const record = (raw ?? {}) as Record<string, unknown>;
+        const id = String(record[primary ?? "id"] ?? `${key}:${seen.size}`);
+        seen.add(id);
+        if (!bucket) continue;
+        const prev = bucket.get(id);
+        if (!prev || num(record.updateTime, 0) >= num(prev.updateTime, 0)) bucket.set(id, record);
+      }
+    }
+    hasMoreData = Boolean(page.hasMoreData);
+    const next = num(page.syncTime, 0);
+    if (!next || next <= time) break;
+    time = next;
+    syncTime = next;
+    if (!hasMoreData) break;
+  }
+  return { modules, counts, syncTime, pages, hasMoreData };
+}
+
+/** 模块明细：按指定字段排序并投影业务字段 */
+function moduleList(
+  modules: Record<string, Map<string, Record<string, unknown>>>,
+  key: string,
+  sortKey: string,
+  order: "asc" | "desc" = "desc",
+): unknown[] {
+  const dir = order === "asc" ? 1 : -1;
+  return [...(modules[key]?.values() ?? [])]
+    .sort((a, b) => dir * (num(a[sortKey], 0) - num(b[sortKey], 0)))
+    .map((record) => projectEntity(key, record));
+}
+
+/** 账户列表：/asset/getAsset 返回完整账户，同步分页中的 Asset 仅作兜底 */
+async function loadAssetList(
+  client: YimuClient,
+  userId: string,
+  since: number,
+  fallback: Map<string, Record<string, unknown>> | undefined,
+): Promise<Record<string, unknown>[]> {
+  try {
+    const r = await client.getAsset(userId, since);
+    if (Array.isArray(r) && r.length) return r as Record<string, unknown>[];
+  } catch {
+    // 接口不可用时退回同步分页数据，保证资产概览仍可读
+  }
+  return [...(fallback?.values() ?? [])];
+}
+
 export function registerYimuTools(
   server: McpServer,
   client: YimuClient,
@@ -484,12 +593,14 @@ export function registerYimuTools(
     {
       name: "get_asset_modules",
       description:
-        "查询资产相关模块（增量同步接口的定向投影），返回资产、定期/固定存款、基金/股票理财流水与持仓、分期和预算数据，并返回借贷数量；" +
-        "不会返回完整账单或资产历史明细，适合理财概览。",
+        "查询资产与理财相关模块：按 syncTime 游标完整翻页拉取增量同步接口，返回全部资产账户（另以 GET /asset/getAsset 校正为完整账户列表）、" +
+        "理财持仓 StockAsset、理财流水 StockInfo、定期/固定存款 AssetFixedDeposit、分期 Instalment、预算 Budget/CategoryBudget；" +
+        "借贷、资产变动、转账、退款、报销等其他模块只返回去重数量，不返回完整账单与资产历史明细。",
       inputSchema: {
         type: "object",
         properties: {
           time: { type: "number", description: "起始时间戳(ms)，缺省 0 全量" },
+          max_pages: { type: "number", description: `最大翻页数，缺省 ${SYNC_PAGE_LIMIT}；服务端分页未取完时 hasMoreData 为 true` },
           user_id: { type: "string" },
         },
         additionalProperties: false,
@@ -498,23 +609,39 @@ export function registerYimuTools(
         requireAuth(a);
         const id = uid(a);
         if (!id) throw new YimuError("缺少用户 ID");
-        const data = (await client.getUpdateDataPage(id, a.time === undefined ? 0 : num(a.time, 0))) as Record<string, unknown> | null;
-        if (!data || typeof data !== "object") return data;
-        const moduleKeys = ["Asset", "AssetFixedDeposit", "StockInfo", "StockAsset", "Instalment", "Budget", "CategoryBudget"];
-        const modules: Record<string, unknown> = {};
+        const since = a.time === undefined ? 0 : num(a.time, 0);
+        const maxPages = Math.min(Math.max(num(a.max_pages, SYNC_PAGE_LIMIT), 1), 100);
+        const sync = await collectSyncModules(client, id, since, maxPages);
+        const assets = await loadAssetList(client, id, since, sync.modules.Asset);
         const counts: Record<string, number> = {};
-        for (const key of moduleKeys) {
-          const value = data[key];
-          if (Array.isArray(value)) {
-            counts[key] = value.length;
-            modules[key] = value.map((x) => projectEntity(key, (x ?? {}) as Record<string, unknown>));
-          } else if (value !== undefined) {
-            modules[key] = value;
+        for (const [key, seen] of Object.entries(sync.counts)) counts[key] = seen.size;
+        const byType: Record<string, { count: number; total: number }> = {};
+        let intoTotalAssetTotal = 0;
+        for (const record of assets) {
+          const kind = ASSET_TYPE_LABELS[String(record.assetType)] ?? `类型${String(record.assetType ?? "未知")}`;
+          const entry = (byType[kind] ??= { count: 0, total: 0 });
+          entry.count += 1;
+          if (record.intoTotalAsset === true) {
+            entry.total = roundMoney(entry.total + num(record.assetNumber, 0)) as number;
+            intoTotalAssetTotal = roundMoney(intoTotalAssetTotal + num(record.assetNumber, 0)) as number;
           }
         }
-        if (Array.isArray(data.Lend)) counts.Lend = data.Lend.length;
-        if (Array.isArray(data.AssetHistory)) counts.AssetHistory = data.AssetHistory.length;
-        return prune({ syncTime: data.syncTime, counts, modules });
+        return prune({
+          syncTime: sync.syncTime,
+          pages: sync.pages,
+          hasMoreData: sync.hasMoreData,
+          counts,
+          assetSummary: { count: assets.length, intoTotalAssetTotal, byType },
+          modules: {
+            Asset: assets.map((record) => projectEntity("Asset", record)),
+            StockAsset: moduleList(sync.modules, "StockAsset", "positionWeight", "asc"),
+            StockInfo: moduleList(sync.modules, "StockInfo", "doTime"),
+            AssetFixedDeposit: moduleList(sync.modules, "AssetFixedDeposit", "startTime"),
+            Instalment: moduleList(sync.modules, "Instalment", "inAssetTime"),
+            Budget: moduleList(sync.modules, "Budget", "month", "asc"),
+            CategoryBudget: moduleList(sync.modules, "CategoryBudget", "month", "asc"),
+          },
+        });
       },
     },
     {
